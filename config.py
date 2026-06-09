@@ -20,7 +20,7 @@ STOP_LOSS_PCT      = 0.02    # trailing stop 2% below high watermark
 TAKE_PROFIT_PCT    = 0.04    # 4% above entry
 MAX_DAILY_LOSS     = 0.05    # halt if daily P&L < -5% of initial balance
 
-INITIAL_BALANCE    = 10000.0
+INITIAL_BALANCE    = 1000.0
 
 SCAN_INTERVAL      = 300     # scanner runs every 5 minutes
 TRADE_LOOP_INTERVAL = 60     # trader checks positions every 60 seconds
