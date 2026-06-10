@@ -9,12 +9,16 @@ New in v2:
   - refresh_earnings_cache() → called in a background thread every 4 hours
 """
 
+import concurrent.futures
 import time
 import threading
 from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
+
+_FETCH_TIMEOUT  = 10   # seconds per individual symbol fetch
+_BATCH_TIMEOUT  = 45   # seconds for the full batch download
 
 # ── Per-symbol OHLC cache ─────────────────────────────────────────────────
 # symbol → {"daily": df, "hourly": df, "ts": float}
@@ -64,44 +68,69 @@ def _normalise_flat(df: pd.DataFrame) -> pd.DataFrame | None:
 
 def batch_scan_populate(symbols: list[str]) -> None:
     """
-    Download daily + hourly OHLC for all symbols + SPY in two API calls,
-    then populate the cache.  Subsequent get_ohlc() calls use the cache.
+    Download daily + hourly OHLC for all symbols + SPY in two API calls.
+    Each batch call has a hard timeout; failures are logged and skipped so a
+    single hanging request can never block the full scan.
     """
     now = time.time()
-    all_syms = list(dict.fromkeys(symbols + ["SPY"]))  # deduplicate, keep order
+    all_syms = list(dict.fromkeys(symbols + ["SPY"]))
+
+    # Daily: 30 days is enough for MACD(26) + 20-day vol avg + 20-day RS
+    # Hourly: 5 days gives ~32 bars, enough for MACD(26) on 1h
+    periods = {"1d": "30d", "1h": "5d"}
 
     for interval, key in [("1d", "daily"), ("1h", "hourly")]:
-        try:
-            raw = yf.download(
-                tickers=all_syms,
-                period="60d",
-                interval=interval,
+        period = periods[interval]
+        t0 = time.time()
+
+        def _batch_download(tickers=all_syms, iv=interval, p=period):
+            return yf.download(
+                tickers=tickers,
+                period=p,
+                interval=iv,
                 progress=False,
                 auto_adjust=True,
                 group_by="ticker",
                 threads=True,
             )
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(_batch_download)
+                try:
+                    raw = future.result(timeout=_BATCH_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    print(f"  [market_data] batch {interval} TIMEOUT after {_BATCH_TIMEOUT}s — skipping")
+                    future.cancel()
+                    continue
+
             if raw is None or raw.empty:
+                print(f"  [market_data] batch {interval} returned empty")
                 continue
 
-            top_level = list(raw.columns.get_level_values(0).unique()) \
+            top_level = (
+                list(raw.columns.get_level_values(0).unique())
                 if isinstance(raw.columns, pd.MultiIndex) else []
-
+            )
+            populated = 0
             with _cache_lock:
                 for sym in all_syms:
                     try:
                         if isinstance(raw.columns, pd.MultiIndex) and sym in top_level:
-                            df_sym = raw[sym].copy()
-                            df_norm = _normalise_flat(df_sym)
+                            df_norm = _normalise_flat(raw[sym].copy())
                         else:
                             df_norm = None
-
                         if sym not in _cache:
                             _cache[sym] = {"daily": None, "hourly": None, "ts": 0.0}
                         _cache[sym][key] = df_norm
                         _cache[sym]["ts"] = now
+                        if df_norm is not None:
+                            populated += 1
                     except Exception as e:
                         print(f"  [market_data] extract {sym} {interval}: {e}")
+
+            elapsed = time.time() - t0
+            print(f"  [market_data] batch {interval} done — {populated}/{len(all_syms)} symbols in {elapsed:.1f}s")
 
         except Exception as e:
             print(f"  [market_data] batch {interval} failed: {e}")
@@ -110,11 +139,19 @@ def batch_scan_populate(symbols: list[str]) -> None:
 # ── Individual fetch (cache fallback) ────────────────────────────────────
 
 def fetch(symbol: str, period: str, interval: str) -> pd.DataFrame | None:
+    """Download one symbol with a hard per-symbol timeout."""
+    def _dl():
+        return yf.download(symbol, period=period, interval=interval,
+                           progress=False, auto_adjust=True)
     try:
-        df = yf.download(
-            symbol, period=period, interval=interval,
-            progress=False, auto_adjust=True,
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_dl)
+            try:
+                df = future.result(timeout=_FETCH_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                print(f"  [market_data] {symbol} {interval}: TIMEOUT")
+                future.cancel()
+                return None
         return _normalise(df, symbol)
     except Exception as e:
         print(f"  [market_data] {symbol} {interval}: {e}")
@@ -128,8 +165,9 @@ def get_ohlc(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     if cached and now - cached["ts"] < _CACHE_TTL:
         return cached["daily"], cached["hourly"]
 
-    df_d = fetch(symbol, period="60d", interval="1d")
-    df_h = fetch(symbol, period="60d", interval="1h")
+    # Reduced periods: only fetch what scoring actually needs
+    df_d = fetch(symbol, period="30d", interval="1d")
+    df_h = fetch(symbol, period="5d",  interval="1h")
     with _cache_lock:
         _cache[symbol] = {"daily": df_d, "hourly": df_h, "ts": now}
     return df_d, df_h
@@ -162,7 +200,9 @@ def _get_spy_daily() -> pd.DataFrame | None:
         cached = _cache.get("SPY")
     if cached and cached["daily"] is not None:
         return cached["daily"]
-    df = fetch("SPY", period="90d", interval="1d")
+    # SPY needs 60d for 50-day SMA; batch_scan_populate already fetches it as "30d"
+    # so use 60d here as the explicit fallback to have enough bars
+    df = fetch("SPY", period="60d", interval="1d")
     with _cache_lock:
         if "SPY" not in _cache:
             _cache["SPY"] = {"daily": None, "hourly": None, "ts": 0.0}

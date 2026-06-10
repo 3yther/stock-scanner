@@ -10,7 +10,10 @@ Always-on scoring (0–100) for all 60 symbols every scan:
 BUY signal requires: 1D bullish AND fresh 1H bullish cross AND vol ≥ MIN_VOL_RATIO.
 Earnings-flagged stocks are suppressed to NEUTRAL even if signal qualifies.
 
-Batch prefetch: two yfinance API calls cover all 60 symbols + SPY before scoring.
+Scan safety:
+  - Batch prefetch covers all 60 + SPY in 2 API calls (each with 45s timeout)
+  - Per-symbol scoring is guarded; failures return no_data rather than hanging
+  - Maximum scan duration of 60 seconds; partial results returned if exceeded
 """
 
 import threading
@@ -36,25 +39,8 @@ class Scanner:
     def _score_symbol(self, symbol: str, spy_regime: dict) -> dict:
         df_d, df_h = market_data.get_ohlc(symbol)
 
-        base = {
-            "symbol":          symbol,
-            "sector":          config.SECTOR_MAP.get(symbol, "Other"),
-            "price":           0.0,
-            "change_pct":      0.0,
-            "signal":          0,
-            "signal_label":    "NEUTRAL",
-            "score":           0.0,
-            "trend_bullish":   False,
-            "entry_cross":     0,
-            "vol_ratio":       1.0,
-            "rs":              0.0,
-            "earnings_soon":   False,
-            "proximity_label": "",
-            "no_data":         True,
-        }
-
-        if df_d is None or len(df_d) < 30:
-            return base
+        if df_d is None or len(df_d) < 26:
+            return self._base_result(symbol)
 
         cross_d, bullish_d = strategies.macd_state(df_d)
         cross_h, bullish_h = 0, False
@@ -154,17 +140,77 @@ class Scanner:
     #  Full scan                                                           #
     # ------------------------------------------------------------------ #
 
+    _MAX_SCAN_SECS = 60  # hard wall — return partial results beyond this
+
     def scan_all(self) -> tuple[list[dict], dict]:
+        scan_start = time.time()
+
         # Batch-prefetch daily + hourly for all 60 + SPY in 2 API calls
         market_data.batch_scan_populate(config.SYMBOLS)
         spy_regime = market_data.get_spy_regime()
 
-        results = []
+        results: list[dict] = []
+        timed_out = False
+
+        for i, sym in enumerate(config.SYMBOLS):
+            # Hard scan deadline
+            if time.time() - scan_start > self._MAX_SCAN_SECS:
+                remaining = len(config.SYMBOLS) - i
+                print(
+                    f"  [SCANNER] 60s limit reached after {i} symbols"
+                    f" — skipping remaining {remaining} (will score next scan)"
+                )
+                timed_out = True
+                break
+
+            try:
+                results.append(self._score_symbol(sym, spy_regime))
+            except Exception as e:
+                print(f"  [SCANNER] {sym} scoring error: {e}")
+                results.append({
+                    **self._base_result(sym),
+                    "no_data": True,
+                })
+
+            # Progress log every 15 symbols
+            if (i + 1) % 15 == 0:
+                elapsed = time.time() - scan_start
+                scored  = sum(1 for r in results if not r.get("no_data"))
+                print(f"  [SCANNER] progress {i+1}/{len(config.SYMBOLS)} symbols, {elapsed:.1f}s elapsed, {scored} scored")
+
+        # Fill in no_data entries for any symbols skipped due to timeout
+        scored_syms = {r["symbol"] for r in results}
         for sym in config.SYMBOLS:
-            results.append(self._score_symbol(sym, spy_regime))
+            if sym not in scored_syms:
+                results.append({**self._base_result(sym), "no_data": True})
 
         results.sort(key=lambda x: x["score"], reverse=True)
+        elapsed_total = time.time() - scan_start
+        scored_count  = sum(1 for r in results if not r.get("no_data"))
+        print(
+            f"  [SCANNER] scan complete — {scored_count}/{len(config.SYMBOLS)} scored"
+            f"  in {elapsed_total:.1f}s  {'(partial — timeout)' if timed_out else ''}"
+        )
         return results, spy_regime
+
+    @staticmethod
+    def _base_result(symbol: str) -> dict:
+        return {
+            "symbol":          symbol,
+            "sector":          config.SECTOR_MAP.get(symbol, "Other"),
+            "price":           0.0,
+            "change_pct":      0.0,
+            "signal":          0,
+            "signal_label":    "NEUTRAL",
+            "score":           0.0,
+            "trend_bullish":   False,
+            "entry_cross":     0,
+            "vol_ratio":       1.0,
+            "rs":              0.0,
+            "earnings_soon":   False,
+            "proximity_label": "",
+            "no_data":         True,
+        }
 
     # ------------------------------------------------------------------ #
     #  Thread                                                              #
