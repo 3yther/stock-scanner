@@ -6,18 +6,12 @@ Always-on scoring (0–100) for all 60 symbols every scan:
   25 pts  entry signal  — fresh 1H bullish cross (25), holding (12), else 0
   20 pts  volume        — tiered: ≥2× avg (20), ≥1.5× (15), ≥1.2× (10), ≥1× (5), <1× (0)
   15 pts  rel. strength — 20-day return vs SPY: >+3% (15), >+1% (10), >0% (5), ≤0% (0)
-
-BUY signal requires: 1D bullish AND fresh 1H bullish cross AND vol ≥ MIN_VOL_RATIO.
-Earnings-flagged stocks are suppressed to NEUTRAL even if signal qualifies.
-
-Scan safety:
-  - Batch prefetch covers all 60 + SPY in 2 API calls (each with 45s timeout)
-  - Per-symbol scoring is guarded; failures return no_data rather than hanging
-  - Maximum scan duration of 60 seconds; partial results returned if exceeded
 """
 
+import sys
 import threading
 import time
+import traceback
 
 import config
 import market_data
@@ -37,9 +31,11 @@ class Scanner:
     # ------------------------------------------------------------------ #
 
     def _score_symbol(self, symbol: str, spy_regime: dict) -> dict:
+        print(f"  [SCANNER] scoring {symbol}…", flush=True)
         df_d, df_h = market_data.get_ohlc(symbol)
 
         if df_d is None or len(df_d) < 26:
+            print(f"  [SCANNER] {symbol} → no_data (df_d rows={len(df_d) if df_d is not None else 'None'})", flush=True)
             return self._base_result(symbol)
 
         cross_d, bullish_d = strategies.macd_state(df_d)
@@ -47,17 +43,13 @@ class Scanner:
         if df_h is not None and len(df_h) >= 26:
             cross_h, bullish_h = strategies.macd_state(df_h)
 
-        # Volume ratio vs 20-day average
-        avg_vol   = df_d["volume"].rolling(20).mean().iloc[-1]
-        cur_vol   = float(df_d["volume"].iloc[-1])
-        vol_ratio = (cur_vol / avg_vol) if avg_vol > 0 else 1.0
-
-        # Price / 1-day change
-        price     = float(df_d["close"].iloc[-1])
-        prev      = float(df_d["close"].iloc[-2]) if len(df_d) > 1 else price
+        avg_vol    = df_d["volume"].rolling(20).mean().iloc[-1]
+        cur_vol    = float(df_d["volume"].iloc[-1])
+        vol_ratio  = (cur_vol / avg_vol) if avg_vol > 0 else 1.0
+        price      = float(df_d["close"].iloc[-1])
+        prev       = float(df_d["close"].iloc[-2]) if len(df_d) > 1 else price
         change_pct = (price - prev) / prev * 100 if prev else 0.0
 
-        # ── Always-on scoring ─────────────────────────────────────────
         # Trend (40 pts)
         trend_pts = 40.0 if bullish_d else 0.0
 
@@ -70,32 +62,21 @@ class Scanner:
             signal_pts = 0.0
 
         # Volume (20 pts, tiered)
-        if vol_ratio >= 2.0:
-            vol_pts = 20.0
-        elif vol_ratio >= 1.5:
-            vol_pts = 15.0
-        elif vol_ratio >= 1.2:
-            vol_pts = 10.0
-        elif vol_ratio >= 1.0:
-            vol_pts = 5.0
-        else:
-            vol_pts = 0.0
+        if   vol_ratio >= 2.0: vol_pts = 20.0
+        elif vol_ratio >= 1.5: vol_pts = 15.0
+        elif vol_ratio >= 1.2: vol_pts = 10.0
+        elif vol_ratio >= 1.0: vol_pts = 5.0
+        else:                  vol_pts = 0.0
 
         # Relative strength vs SPY (15 pts)
         rs = market_data.get_relative_strength(symbol)
-        if rs > 3.0:
-            rs_pts = 15.0
-        elif rs > 1.0:
-            rs_pts = 10.0
-        elif rs > 0.0:
-            rs_pts = 5.0
-        else:
-            rs_pts = 0.0
+        if   rs > 3.0: rs_pts = 15.0
+        elif rs > 1.0: rs_pts = 10.0
+        elif rs > 0.0: rs_pts = 5.0
+        else:          rs_pts = 0.0
 
         score = trend_pts + signal_pts + vol_pts + rs_pts
 
-        # ── Signal determination ──────────────────────────────────────
-        # BUY requires: bullish trend + fresh 1H cross + sufficient volume
         earnings_soon = market_data.get_earnings_flag(symbol)
 
         if bullish_d and cross_h == 1 and vol_ratio >= config.MIN_VOL_RATIO and not earnings_soon:
@@ -105,20 +86,21 @@ class Scanner:
         else:
             signal = 0
 
-        # Earnings suppresses to NEUTRAL (but score stays for proximity)
         if earnings_soon and signal == 1:
             signal = 0
 
         label = {1: "BUY", -1: "SELL", 0: "NEUTRAL"}[signal]
 
-        # Proximity: how close a non-BUY stock is to triggering
         proximity_label = ""
         if signal != 1:
-            if score >= 65:
-                proximity_label = "CLOSE"
-            elif score >= 50:
-                proximity_label = "WATCHING"
+            if   score >= 65: proximity_label = "CLOSE"
+            elif score >= 50: proximity_label = "WATCHING"
 
+        print(
+            f"  [SCANNER] {symbol} → signal={label} score={score:.0f}"
+            f"  trend={'↑' if bullish_d else '↓'} vol={vol_ratio:.1f}x rs={rs:+.1f}%",
+            flush=True,
+        )
         return {
             "symbol":          symbol,
             "sector":          config.SECTOR_MAP.get(symbol, "Other"),
@@ -140,25 +122,31 @@ class Scanner:
     #  Full scan                                                           #
     # ------------------------------------------------------------------ #
 
-    _MAX_SCAN_SECS = 60  # hard wall — return partial results beyond this
+    _MAX_SCAN_SECS = 120  # raised to accommodate verbose debug logging
 
     def scan_all(self) -> tuple[list[dict], dict]:
         scan_start = time.time()
+        print(f"  [SCANNER] scan_all() start", flush=True)
 
-        # Batch-prefetch daily + hourly for all 60 + SPY in 2 API calls
+        print(f"  [SCANNER] calling batch_scan_populate…", flush=True)
         market_data.batch_scan_populate(config.SYMBOLS)
+        print(f"  [SCANNER] batch_scan_populate done ({time.time()-scan_start:.1f}s)", flush=True)
+
+        print(f"  [SCANNER] fetching SPY regime…", flush=True)
         spy_regime = market_data.get_spy_regime()
+        print(f"  [SCANNER] regime={spy_regime['regime']} spy=${spy_regime['spy_price']}", flush=True)
 
         results: list[dict] = []
         timed_out = False
 
         for i, sym in enumerate(config.SYMBOLS):
-            # Hard scan deadline
-            if time.time() - scan_start > self._MAX_SCAN_SECS:
+            elapsed = time.time() - scan_start
+            if elapsed > self._MAX_SCAN_SECS:
                 remaining = len(config.SYMBOLS) - i
                 print(
-                    f"  [SCANNER] 60s limit reached after {i} symbols"
-                    f" — skipping remaining {remaining} (will score next scan)"
+                    f"  [SCANNER] {self._MAX_SCAN_SECS}s limit at symbol {i}/{len(config.SYMBOLS)}"
+                    f" — skipping {remaining} symbols",
+                    flush=True,
                 )
                 timed_out = True
                 break
@@ -166,19 +154,12 @@ class Scanner:
             try:
                 results.append(self._score_symbol(sym, spy_regime))
             except Exception as e:
-                print(f"  [SCANNER] {sym} scoring error: {e}")
-                results.append({
-                    **self._base_result(sym),
-                    "no_data": True,
-                })
+                print(f"  [SCANNER] {sym} scoring exception: {e}", flush=True)
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.flush()
+                results.append({**self._base_result(sym), "no_data": True})
 
-            # Progress log every 15 symbols
-            if (i + 1) % 15 == 0:
-                elapsed = time.time() - scan_start
-                scored  = sum(1 for r in results if not r.get("no_data"))
-                print(f"  [SCANNER] progress {i+1}/{len(config.SYMBOLS)} symbols, {elapsed:.1f}s elapsed, {scored} scored")
-
-        # Fill in no_data entries for any symbols skipped due to timeout
+        # Pad skipped symbols with no_data
         scored_syms = {r["symbol"] for r in results}
         for sym in config.SYMBOLS:
             if sym not in scored_syms:
@@ -187,9 +168,13 @@ class Scanner:
         results.sort(key=lambda x: x["score"], reverse=True)
         elapsed_total = time.time() - scan_start
         scored_count  = sum(1 for r in results if not r.get("no_data"))
+        buys          = [r["symbol"] for r in results if r["signal"] == 1]
         print(
-            f"  [SCANNER] scan complete — {scored_count}/{len(config.SYMBOLS)} scored"
-            f"  in {elapsed_total:.1f}s  {'(partial — timeout)' if timed_out else ''}"
+            f"  [SCANNER] scan_all() COMPLETE — {scored_count}/{len(config.SYMBOLS)} scored"
+            f"  in {elapsed_total:.1f}s  regime={spy_regime['regime']}"
+            f"  BUY signals: {buys or 'none'}"
+            f"  {'(PARTIAL timeout)' if timed_out else ''}",
+            flush=True,
         )
         return results, spy_regime
 
@@ -217,21 +202,23 @@ class Scanner:
     # ------------------------------------------------------------------ #
 
     def run_loop(self, trader):
-        """Blocking loop — call from a daemon thread."""
+        print(f"  [SCANNER] run_loop() entered — thread={threading.current_thread().name}", flush=True)
         self._running = True
 
-        # Kick off earnings refresh in the background (slow, ~6s for 60 symbols)
         def _earnings_loop():
+            print("  [SCANNER] earnings thread started", flush=True)
             market_data.refresh_earnings_cache(config.SYMBOLS)
             while self._running:
-                time.sleep(14400)  # refresh every 4 hours
+                time.sleep(14400)
                 market_data.refresh_earnings_cache(config.SYMBOLS)
 
         threading.Thread(target=_earnings_loop, daemon=True, name="earnings").start()
 
+        scan_num = 0
         while self._running:
+            scan_num += 1
+            print(f"\n  [SCANNER] ===== SCAN #{scan_num} START =====", flush=True)
             try:
-                print(f"  [SCANNER] Scanning {len(config.SYMBOLS)} symbols…")
                 results, spy_regime = self.scan_all()
                 ts = time.time()
                 with self._lock:
@@ -239,13 +226,11 @@ class Scanner:
                     self._regime       = spy_regime
                     self._last_scan_ts = ts
                 trader.update_scan(results, ts, spy_regime)
-                buys = [r["symbol"] for r in results if r["signal"] == 1]
-                print(
-                    f"  [SCANNER] Done — regime={spy_regime['regime']}"
-                    f"  BUY signals: {buys[:5] or 'none'}"
-                )
+                print(f"  [SCANNER] ===== SCAN #{scan_num} DONE — sleeping {config.SCAN_INTERVAL}s =====\n", flush=True)
             except Exception as e:
-                print(f"  [SCANNER] Error: {e}")
+                print(f"  [SCANNER] ===== SCAN #{scan_num} EXCEPTION =====", flush=True)
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.flush()
             time.sleep(config.SCAN_INTERVAL)
 
     def get_results(self) -> list[dict]:

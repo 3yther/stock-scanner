@@ -20,8 +20,11 @@ from scanner import Scanner
 
 
 def main():
-    print("=" * 62)
-    print("  Stock Scanner  —  Paper Trading Bot")
+    # Ensure stdout is unbuffered so every print appears in Railway logs immediately
+    sys.stdout.reconfigure(line_buffering=True)
+
+    print("=" * 62, flush=True)
+    print("  Stock Scanner  —  Paper Trading Bot", flush=True)
     print(f"  Universe    : {len(config.SYMBOLS)} symbols")
     print(f"  Strategy    : Multi-Timeframe MACD (1D trend + 1H entry)")
     print(f"  Balance     : ${config.INITIAL_BALANCE:,.2f}  |  Max positions: {config.MAX_POSITIONS}")
@@ -61,9 +64,12 @@ def main():
     )
 
     scanner_thread.start()
+    print(f"  scanner thread started — alive={scanner_thread.is_alive()} id={scanner_thread.ident}", flush=True)
+
     # Give scanner a moment to populate results before trader starts acting
     time.sleep(2)
     trader_thread.start()
+    print(f"  trader  thread started — alive={trader_thread.is_alive()}  id={trader_thread.ident}", flush=True)
 
     def _shutdown(sig, frame):
         print("\n\n  Shutting down…")
