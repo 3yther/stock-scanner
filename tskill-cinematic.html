@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T-SKiLL — Coming Soon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Stack+Sans+Notch:wght@200..700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100vw; height: 100vh;
+      overflow: hidden; background: #000;
+      font-family: 'Stack Sans Notch', 'Space Grotesk', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #c { position: fixed; inset: 0; display: block; }
+
+    /* ── Text overlays ── */
+    #freeze-text {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10; pointer-events: none;
+      font-size: clamp(1rem, 2.6vw, 1.9rem);
+      font-weight: 300; letter-spacing: 0.06em;
+      color: rgba(255,255,255,0); text-align: center;
+      padding: 2rem;
+      transition: color 1.6s cubic-bezier(0.22,1,0.36,1);
+    }
+    #freeze-text.in { color: rgba(255,255,255,0.93); }
+
+    #reveal-stage {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: clamp(0.55rem, 1.5vh, 1rem);
+      z-index: 10; pointer-events: none; opacity: 0;
+    }
+
+    #coming-text {
+      font-size: clamp(0.72rem, 1.6vw, 1rem);
+      font-weight: 300; letter-spacing: 0.18em;
+      color: rgba(8,20,48,0);
+      transition: color 2s ease;
+    }
+    #coming-text.in { color: rgba(8,20,48,0.82); }
+
+    #logo-text {
+      font-size: clamp(2.8rem, 8vw, 6.8rem);
+      font-weight: 700; letter-spacing: 0.13em;
+      color: rgba(8,20,48,0);
+      transition: color 2.2s ease 0.5s;
+    }
+    #logo-text.in { color: rgba(8,20,48,0.88); }
+
+    #tagline-text {
+      font-size: clamp(0.55rem, 1.2vw, 0.76rem);
+      font-weight: 400; letter-spacing: 0.44em;
+      text-transform: uppercase;
+      color: rgba(107,92,231,0);
+      transition: color 2.2s ease 1.3s;
+    }
+    #tagline-text.in { color: rgba(107,92,231,0.92); }
+
+    /* ── Replay ── */
+    #replay-btn {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.18);
+      color: rgba(255,255,255,0.32);
+      padding: 0.42rem 0.9rem;
+      font-family: inherit; font-size: 0.58rem;
+      letter-spacing: 0.26em; text-transform: uppercase;
+      cursor: pointer; border-radius: 3px;
+      z-index: 100; opacity: 0; pointer-events: none;
+      transition: opacity 0.9s ease, background 0.25s, color 0.25s, border-color 0.25s;
+    }
+    #replay-btn.show { opacity: 1; pointer-events: auto; }
+    #replay-btn:hover {
+      background: rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.82);
+      border-color: rgba(255,255,255,0.4);
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<p id="freeze-text">This is what T Level students struggle with.</p>
+
+<div id="reveal-stage">
+  <p id="coming-text">Coming Soon — September</p>
+  <div id="logo-text">T-SKiLL</div>
+  <p id="tagline-text">coming soon</p>
+</div>
+
+<button id="replay-btn">Replay</button>
+
+<script>
+!function () {
+  'use strict';
+
+  // ── Canvas ──────────────────────────────────────────────────────────────────
+  const cv = document.getElementById('c');
+  const cx = cv.getContext('2d');
+  let W, H;
+
+  const off = document.createElement('canvas'); // offscreen for paper renders & glitch capture
+  let offCx = off.getContext('2d');
+
+  function resize() {
+    W = cv.width  = off.width  = window.innerWidth;
+    H = cv.height = off.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', function () { resize(); reinit(); });
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  var lerp   = function (a, b, t) { return a + (b - a) * t; };
+  var clamp  = function (x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; };
+  var eOut3  = function (t) { return 1 - Math.pow(1 - t, 3); };
+  var eIn3   = function (t) { return t * t * t; };
+  var eIO    = function (t) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; };
+
+  function lc(a, b, t) { return [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)]; }
+  function rgb(c)       { return 'rgb('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+')'; }
+  function rgba(c, a)   { return 'rgba('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+','+a+')'; }
+
+  // ── Phase timestamps (ms) ───────────────────────────────────────────────────
+  var T = {
+    N:  4000,   // nature ends
+    P:  8000,   // papers ends
+    G:  10000,  // glitch ends
+    F:  13000,  // freeze ends
+    R:  15000,  // rewind ends
+    B:  18000,  // breakthrough ends
+    E:  22000   // reveal ends
+  };
+
+  // ── Palettes ────────────────────────────────────────────────────────────────
+  var CN = { top:[13,27,62], mid:[16,52,96], bot:[18,75,95] };      // nature
+  var CS = { top:[185,85,20], mid:[232,118,32], bot:[255,195,118],  // sunrise
+             glow:[255,238,168], beam:[255,252,220] };
+
+  // ── State ───────────────────────────────────────────────────────────────────
+  var startMs = 0;
+  var elapsed = 0;
+  var particles = [];
+  var papers = [];
+  var glitchSrc = null;     // canvas snapshot for glitch
+  var glitchCaptured = false;
+  var lastPhase = 0;
+  var rafId;
+
+  // ── Particles ───────────────────────────────────────────────────────────────
+  function initParticles() {
+    particles = [];
+    for (var i = 0; i < 55; i++) {
+      particles.push({
+        x:  Math.random() * W,
+        y:  Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.22,
+        vy: Math.random() * 0.45 + 0.08,
+        r:  Math.random() * 2.6 + 0.4,
+        a:  Math.random() * 0.38 + 0.07,
+        ph: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  function tickParticles() {
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      p.x += p.vx + Math.sin(elapsed * 0.00045 + p.ph) * 0.09;
+      p.y += p.vy;
+      if (p.y > H + 5) { p.y = -5; p.x = Math.random() * W; }
+    }
+  }
+
+  function drawParticles(ctx, blend) {
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      var col = lc([200, 228, 255], [255, 218, 130], blend);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(col, p.a * (0.55 + blend * 0.45));
+      ctx.fill();
+    }
+  }
+
+  // ── Papers ──────────────────────────────────────────────────────────────────
+  function initPapers() {
+    papers = [];
+    var sides = ['top','right','bottom','left'];
+    for (var i = 0; i < 30; i++) {
+      var side = sides[Math.floor(Math.random() * 4)];
+      var sx, sy;
+      if      (side === 'top')    { sx = Math.random() * W; sy = -160; }
+      else if (side === 'right')  { sx = W + 160;           sy = Math.random() * H; }
+      else if (side === 'bottom') { sx = Math.random() * W; sy = H + 160; }
+      else                        { sx = -160;              sy = Math.random() * H; }
+
+      var shade = 225 + Math.floor(Math.random() * 25);
+      // Bias arrivals toward end (accelerating pile-up)
+      var arriveAt = Math.pow((i + 0.5) / 30, 0.5) * 3650 + 80;
+
+      papers.push({
+        sx: sx, sy: sy,
+        ex: W * 0.12 + Math.random() * W * 0.76,
+        ey: H * 0.08 + Math.random() * H * 0.84,
+        w:  82 + Math.random() * 78,
+        h:  108 + Math.random() * 62,
+        rot: (Math.random() - 0.5) * 0.58,
+        shade: shade,
+        arriveAt: arriveAt,
+        travelMs: 280 + Math.random() * 240
+      });
+    }
+    papers.sort(function (a, b) { return a.arriveAt - b.arriveAt; });
+  }
+
+  function drawOnePaper(ctx, p, pt) {
+    // pt: progress of this paper's flight (0..1 = in flight, >=1 = landed)
+    if (pt <= 0) return;
+    var ease = eOut3(Math.min(pt, 1));
+    var x    = lerp(p.sx, p.ex, ease);
+    var y    = lerp(p.sy, p.ey, ease);
+    var r    = p.rot * ease;
+    var al   = Math.min(pt * 4, 1);
+
+    ctx.save();
+    ctx.globalAlpha = al;
+    ctx.translate(x, y);
+    ctx.rotate(r);
+    ctx.shadowColor  = 'rgba(0,0,0,0.38)';
+    ctx.shadowBlur   = 9;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 4;
+    ctx.fillStyle = 'rgb('+p.shade+','+(p.shade-3)+','+(p.shade-9)+')';
+    ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(140,130,120,0.28)';
+    ctx.lineWidth = 0.5;
+    for (var ly = -p.h / 2 + 20; ly < p.h / 2 - 8; ly += 15) {
+      ctx.beginPath();
+      ctx.moveTo(-p.w / 2 + 9, ly);
+      ctx.lineTo(p.w / 2 - 9, ly);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPapersScene(ctx, papersTime) {
+    var dg = ctx.createLinearGradient(0, 0, 0, H);
+    dg.addColorStop(0, '#1D1709');
+    dg.addColorStop(1, '#0E0B04');
+    ctx.fillStyle = dg;
+    ctx.fillRect(0, 0, W, H);
+
+    for (var i = 0; i < papers.length; i++) {
+      var p  = papers[i];
+      var pt = (papersTime - p.arriveAt) / p.travelMs;
+      drawOnePaper(ctx, p, pt);
+    }
+  }
+
+  // ── Glitch capture & draw ───────────────────────────────────────────────────
+  function captureGlitchSource() {
+    if (!glitchSrc) {
+      glitchSrc = document.createElement('canvas');
+      glitchSrc.width  = W;
+      glitchSrc.height = H;
+    } else {
+      glitchSrc.width  = W;
+      glitchSrc.height = H;
+    }
+    var gc = glitchSrc.getContext('2d');
+    drawPapersScene(gc, 4000); // fully loaded papers
+    glitchCaptured = true;
+  }
+
+  function drawGlitch(intensity) {
+    if (!glitchSrc) return;
+
+    // Base scene
+    cx.drawImage(glitchSrc, 0, 0);
+
+    // Scanline displacement: copy horizontal strips with random x offsets
+    var STRIP = 3;
+    var stripsH = Math.ceil(H / STRIP);
+    for (var s = 0; s < stripsH; s++) {
+      var sy   = s * STRIP;
+      var sh   = Math.min(STRIP, H - sy);
+      var kick = 0;
+      if (Math.random() < 0.09 * intensity) {
+        kick = (Math.random() - 0.5) * intensity * 55;
+      }
+      if (kick !== 0) {
+        cx.drawImage(glitchSrc, 0, sy, W, sh, kick, sy, W, sh);
+      }
+    }
+
+    // RGB-offset ghosts using 'lighter' composite
+    var rOff = (Math.random() - 0.5) * intensity * 12;
+    var bOff = (Math.random() - 0.5) * intensity * 12;
+    cx.save();
+    cx.globalCompositeOperation = 'lighter';
+    cx.globalAlpha = 0.18 * intensity;
+    cx.drawImage(glitchSrc, rOff, 0);
+    cx.globalAlpha = 0.14 * intensity;
+    cx.drawImage(glitchSrc, bOff, 0);
+    cx.restore();
+
+    // Colour channel tint strips
+    if (Math.random() < 0.5 * intensity) {
+      var cy2 = Math.random() * H;
+      var ch  = 4 + Math.random() * 28;
+      cx.fillStyle = 'rgba(255,0,60,' + (0.12 * intensity) + ')';
+      cx.fillRect(0, cy2, W, ch);
+    }
+    if (Math.random() < 0.4 * intensity) {
+      var cy3 = Math.random() * H;
+      var ch2 = 3 + Math.random() * 20;
+      cx.fillStyle = 'rgba(0,80,255,' + (0.1 * intensity) + ')';
+      cx.fillRect(0, cy3, W, ch2);
+    }
+
+    // Occasional full-screen flash
+    if (Math.random() < 0.05 * intensity) {
+      cx.fillStyle = 'rgba(255,255,255,' + (0.18 + Math.random() * 0.12) + ')';
+      cx.fillRect(0, 0, W, H);
+    }
+    // Black crack
+    if (Math.random() < 0.3 * intensity) {
+      var by = Math.random() * H;
+      cx.fillStyle = 'rgba(0,0,0,0.95)';
+      cx.fillRect(0, by, W, 1 + Math.random() * 2);
+    }
+  }
+
+  // ── Nature / Breakthrough scene ─────────────────────────────────────────────
+  function drawSky(ctx, blend) {
+    // blend: 0 = nature, 1 = full sunrise
+    var top = lc(CN.top, CS.top, blend);
+    var mid = lc(CN.mid, CS.mid, blend);
+    var bot = lc(CN.bot, CS.bot, blend);
+
+    var g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0,   rgb(top));
+    g.addColorStop(0.48, rgb(mid));
+    g.addColorStop(1,   rgb(bot));
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    if (blend > 0) {
+      // Sunrise bloom
+      var bloomR  = Math.min(W, H) * (0.35 + blend * 0.9);
+      var bloomR2 = bloomR * 0.35;
+      var glow = ctx.createRadialGradient(W/2, H * 0.52, bloomR2 * 0.1, W/2, H * 0.52, bloomR);
+      glow.addColorStop(0,    rgba(CS.beam, blend * 0.95));
+      glow.addColorStop(0.18, rgba(CS.glow, blend * 0.8));
+      glow.addColorStop(0.5,  rgba(CS.mid,  blend * 0.35));
+      glow.addColorStop(1,    rgba(CS.glow, 0));
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, W, H);
+
+      // Inner lens flare
+      if (blend > 0.5) {
+        var lf = ctx.createRadialGradient(W/2, H*0.52, 0, W/2, H*0.52, bloomR2);
+        lf.addColorStop(0, rgba([255,255,240], (blend - 0.5) * 2 * 0.9));
+        lf.addColorStop(1, rgba([255,255,240], 0));
+        ctx.fillStyle = lf;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+  }
+
+  // ── Main render loop ─────────────────────────────────────────────────────────
+  var lastRaf = 0;
+
+  function frame(ts) {
+    var dt = lastRaf ? Math.min(ts - lastRaf, 50) : 16;
+    lastRaf = ts;
+    elapsed = ts - startMs;
+
+    var e = elapsed;
+
+    // ── Phase 1: Nature (0–4000ms) ──────────────────────────────────────────
+    if (e < T.N) {
+      var t1 = e / T.N;
+      tickParticles();
+      drawSky(cx, 0);
+      cx.globalAlpha = eIO(clamp(t1 * 5, 0, 1));
+      drawParticles(cx, 0);
+      cx.globalAlpha = 1;
+
+    // ── Phase 2: Papers (4000–8000ms) ───────────────────────────────────────
+    } else if (e < T.P) {
+      var t2     = (e - T.N) / (T.P - T.N);
+      var xfade  = clamp(t2 / 0.15, 0, 1);  // 0→1 in first 15% of phase
+      var papT   = t2 * 4000;               // time within papers animation (0–4000)
+
+      // Cross-fade: nature → desk
+      if (xfade < 1) {
+        tickParticles();
+        drawSky(cx, 0);
+        drawParticles(cx, 0);
+        // Desk overlay
+        off.width = W; off.height = H;
+        offCx = off.getContext('2d');
+        drawPapersScene(offCx, papT);
+        cx.save();
+        cx.globalAlpha = eIO(xfade);
+        cx.drawImage(off, 0, 0);
+        cx.restore();
+      } else {
+        drawPapersScene(cx, papT);
+      }
+
+    // ── Phase 3: Glitch (8000–10000ms) ──────────────────────────────────────
+    } else if (e < T.G) {
+      var t3 = (e - T.P) / (T.G - T.P);   // 0→1
+
+      if (!glitchCaptured) captureGlitchSource();
+
+      // Intensity ramps up then peaks
+      var intensity = clamp(t3 * 3, 0, 1);
+      drawGlitch(intensity);
+
+    // ── Phase 4: Freeze (10000–13000ms) ─────────────────────────────────────
+    } else if (e < T.F) {
+      var t4 = (e - T.G) / (T.F - T.G);   // 0→1
+      if (glitchSrc) cx.drawImage(glitchSrc, 0, 0);
+
+      // Darken slightly
+      cx.fillStyle = 'rgba(0,0,0,' + (t4 * 0.18) + ')';
+      cx.fillRect(0, 0, W, H);
+
+    // ── Phase 5: Rewind (13000–15000ms) ─────────────────────────────────────
+    } else if (e < T.R) {
+      var t5      = (e - T.F) / (T.R - T.F);          // 0→1
+      var revPapT = 4000 * (1 - eIO(t5));              // papers time 4000→0
+      var revFade = clamp((t5 - 0.68) / 0.32, 0, 1);  // fade to nature in last 32%
+
+      tickParticles();
+
+      // Brief glitch burst at rewind kickoff (first 8% of phase)
+      if (t5 < 0.08 && glitchSrc) {
+        drawGlitch((1 - t5 / 0.08) * 0.85);
+      } else {
+        // Papers vanish in reverse on main canvas
+        drawPapersScene(cx, revPapT);
+
+        // Blend nature in on top as papers finish disappearing
+        if (revFade > 0.005) {
+          off.width  = W;
+          off.height = H;
+          offCx = off.getContext('2d');
+          drawSky(offCx, 0);
+          drawParticles(offCx, 0);
+          cx.save();
+          cx.globalAlpha = eIO(revFade);
+          cx.drawImage(off, 0, 0);
+          cx.restore();
+        }
+      }
+
+    // ── Phase 6: Breakthrough (15000–18000ms) ───────────────────────────────
+    } else if (e < T.B) {
+      var t6 = (e - T.R) / (T.B - T.R);   // 0→1
+      var sunBlend = eIO(t6);
+      tickParticles();
+      drawSky(cx, sunBlend);
+      drawParticles(cx, sunBlend);
+
+    // ── Phase 7: Reveal (18000–22000ms) ─────────────────────────────────────
+    } else {
+      tickParticles();
+      drawSky(cx, 1);
+      drawParticles(cx, 1);
+    }
+
+    rafId = requestAnimationFrame(frame);
+  }
+
+  // ── UI element refs ──────────────────────────────────────────────────────────
+  var freezeEl    = document.getElementById('freeze-text');
+  var revealEl    = document.getElementById('reveal-stage');
+  var comingEl    = document.getElementById('coming-text');
+  var logoEl      = document.getElementById('logo-text');
+  var taglineEl   = document.getElementById('tagline-text');
+  var replayBtn   = document.getElementById('replay-btn');
+
+  var timers = [];
+  function after(ms, fn) { timers.push(setTimeout(fn, ms)); }
+  function clearTimers()  { timers.forEach(clearTimeout); timers = []; }
+
+  function showFreeze()  { freezeEl.classList.add('in'); }
+  function hideFreeze()  { freezeEl.classList.remove('in'); }
+
+  function showReveal() {
+    revealEl.style.opacity = '1';
+    setTimeout(function () { comingEl.classList.add('in'); }, 80);
+    setTimeout(function () { logoEl.classList.add('in'); },   180);
+    setTimeout(function () { taglineEl.classList.add('in'); }, 300);
+  }
+
+  // ── Start / Reset ────────────────────────────────────────────────────────────
+  function reinit() {
+    initParticles();
+    initPapers();
+    glitchCaptured = false;
+    glitchSrc      = null;
+    lastRaf        = 0;
+  }
+
+  function run() {
+    clearTimers();
+
+    // Reset DOM
+    freezeEl.classList.remove('in');
+    revealEl.style.opacity = '0';
+    comingEl.classList.remove('in');
+    logoEl.classList.remove('in');
+    taglineEl.classList.remove('in');
+    replayBtn.classList.remove('show');
+
+    reinit();
+    startMs = performance.now();
+    elapsed = 0;
+
+    // Phase 4: freeze text fades in at ~11s (1s into freeze hold)
+    after(11000, showFreeze);
+    // Hide before rewind
+    after(12800, hideFreeze);
+
+    // Reveal stage appears during phase 7
+    after(19000, showReveal);
+
+    // Replay button
+    after(21500, function () { replayBtn.classList.add('show'); });
+  }
+
+  replayBtn.addEventListener('click', function () {
+    replayBtn.classList.remove('show');
+    if (rafId) cancelAnimationFrame(rafId);
+    run();
+    rafId = requestAnimationFrame(frame);
+  });
+
+  // ── Boot ─────────────────────────────────────────────────────────────────────
+  run();
+  rafId = requestAnimationFrame(frame);
+
+}();
+</script>
+</body>
+</html>

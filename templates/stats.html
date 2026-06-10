@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Scanner — Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0D1117; --surface: #161B22; --surface2: #1C2128;
+    --border: #21262D; --blue: #58A6FF; --green: #3FB950;
+    --red: #F85149; --yellow: #D29922; --purple: #BC8CFF;
+    --subtle: #8B949E; --text: #E6EDF3;
+    --mono: 'JetBrains Mono', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: var(--surface); position: sticky; top: 0; z-index: 100;
+  }
+  .hdr-left { display: flex; align-items: center; gap: 12px; }
+  .logo { font-weight: 700; font-size: 16px; }
+  .back-link {
+    font-size: 12px; color: var(--blue); text-decoration: none;
+    padding: 4px 10px; border: 1px solid rgba(88,166,255,.3);
+    border-radius: 6px; background: rgba(88,166,255,.07);
+  }
+  .back-link:hover { background: rgba(88,166,255,.14); }
+
+  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+  /* Stats Grid */
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(6, 1fr);
+    gap: 12px; margin-bottom: 24px;
+  }
+  @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px)  { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .stat-label { font-size: 11px; font-weight: 500; color: var(--subtle); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .stat-val { font-family: var(--mono); font-size: 22px; font-weight: 500; }
+  .stat-val.pos { color: var(--green); }
+  .stat-val.neg { color: var(--red); }
+  .stat-sub { font-size: 11px; color: var(--subtle); margin-top: 4px; font-family: var(--mono); }
+
+  /* Charts row */
+  .charts-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; } }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+  .card-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .6px; color: var(--subtle);
+  }
+  .chart-wrap { padding: 16px; position: relative; height: 280px; }
+  .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; padding: 9px 14px; font-size: 10px;
+    font-weight: 600; color: var(--subtle); text-transform: uppercase;
+    letter-spacing: .5px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  th:not(:first-child) { text-align: right; }
+  td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  td:not(:first-child) { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  .empty { text-align: center; color: var(--subtle); padding: 28px; font-size: 13px; }
+
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+
+  /* Two-col tables */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+
+  footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 24px; border-top: 1px solid var(--border);
+    color: var(--subtle); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-left">
+    <a href="/" class="back-link">&#x2190; Dashboard</a>
+    <span class="logo">&#x1F4CA; Performance Analytics</span>
+  </div>
+  <div>
+    <span id="last-updated" style="font-size:12px;color:var(--subtle);font-family:var(--mono)"></span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Summary Stats -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total Trades</div>
+      <div class="stat-val" id="st-total">&mdash;</div>
+      <div class="stat-sub" id="st-total-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-val" id="st-wr">&mdash;</div>
+      <div class="stat-sub" id="st-wr-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Profit Factor</div>
+      <div class="stat-val" id="st-pf">&mdash;</div>
+      <div class="stat-sub">Gross wins ÷ losses</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Win</div>
+      <div class="stat-val pos" id="st-aw">&mdash;</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Loss</div>
+      <div class="stat-val neg" id="st-al">&mdash;</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Expectancy</div>
+      <div class="stat-val" id="st-exp">&mdash;</div>
+      <div class="stat-sub">Per trade (avg)</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-row">
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hdr">Equity Curve</div>
+      <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hdr">Daily P&amp;L</div>
+      <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div style="height:20px"></div>
+
+  <!-- By-symbol + best/worst -->
+  <div class="two-col">
+
+    <div class="card" style="margin-bottom:0">
+      <div class="card-hdr">Trades by Symbol</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Symbol</th>
+            <th>Trades</th>
+            <th>Win %</th>
+            <th>Total P&amp;L</th>
+          </tr></thead>
+          <tbody id="sym-body">
+            <tr><td colspan="4" class="empty">No data yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-hdr">Best Trades</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Action</th>
+              <th>P&amp;L</th>
+            </tr></thead>
+            <tbody id="best-body">
+              <tr><td colspan="4" class="empty">No data yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:0">
+        <div class="card-hdr">Worst Trades</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Action</th>
+              <th>P&amp;L</th>
+            </tr></thead>
+            <tbody id="worst-body">
+              <tr><td colspan="4" class="empty">No data yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<footer>
+  <span>Stock Scanner &mdash; Paper Trading Only</span>
+  <span style="font-size:11px">Made by Amir</span>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const CHART_DEFAULTS = {
+  color: '#E6EDF3',
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: '#8B949E', font: { size: 10 } }, grid: { color: 'rgba(33,38,45,.6)' } },
+    y: { ticks: { color: '#8B949E', font: { size: 10 } }, grid: { color: 'rgba(33,38,45,.6)' } },
+  },
+};
+
+function money(n) {
+  if (n == null) return '—';
+  const v = parseFloat(n);
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+let equityChart, dailyChart;
+
+function buildEquityChart(data, initialBalance) {
+  if (equityChart) equityChart.destroy();
+  const ctx = document.getElementById('equity-chart').getContext('2d');
+  if (!data.length) {
+    ctx.fillStyle = '#8B949E'; ctx.textAlign = 'center';
+    ctx.font = '13px Inter';
+    ctx.fillText('No snapshots yet — running bot will populate this chart.', ctx.canvas.width/2, ctx.canvas.height/2);
+    return;
+  }
+  const labels  = data.map(d => d.date);
+  const values  = data.map(d => parseFloat(d.equity));
+  const baseline = Array(labels.length).fill(initialBalance);
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Equity',
+          data: values,
+          borderColor: '#3FB950',
+          backgroundColor: 'rgba(63,185,80,.08)',
+          fill: true, tension: 0.3, pointRadius: 3, borderWidth: 2,
+        },
+        {
+          label: 'Start',
+          data: baseline,
+          borderColor: 'rgba(139,148,158,.4)',
+          borderDash: [4, 4], borderWidth: 1, pointRadius: 0, fill: false,
+        },
+      ],
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        ...CHART_DEFAULTS.plugins,
+        tooltip: {
+          backgroundColor: '#1C2128',
+          borderColor: '#21262D', borderWidth: 1,
+          callbacks: {
+            label: ctx => ' ' + money(ctx.raw),
+          },
+        },
+      },
+      scales: {
+        ...CHART_DEFAULTS.scales,
+        y: {
+          ...CHART_DEFAULTS.scales.y,
+          ticks: { ...CHART_DEFAULTS.scales.y.ticks, callback: v => '$' + v.toLocaleString() },
+        },
+      },
+    },
+  });
+}
+
+function buildDailyChart(data) {
+  if (dailyChart) dailyChart.destroy();
+  const ctx = document.getElementById('daily-chart').getContext('2d');
+  if (!data.length) {
+    ctx.fillStyle = '#8B949E'; ctx.textAlign = 'center';
+    ctx.font = '13px Inter';
+    ctx.fillText('No closed trades yet.', ctx.canvas.width/2, ctx.canvas.height/2);
+    return;
+  }
+  const labels = data.map(d => d.date.slice(5));  // MM-DD
+  const values = data.map(d => parseFloat(d.pnl));
+  const colors = values.map(v => v >= 0 ? 'rgba(63,185,80,.8)' : 'rgba(248,81,73,.8)');
+  dailyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Daily P&L',
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      scales: {
+        ...CHART_DEFAULTS.scales,
+        y: {
+          ...CHART_DEFAULTS.scales.y,
+          ticks: { ...CHART_DEFAULTS.scales.y.ticks, callback: v => '$' + v.toFixed(0) },
+        },
+      },
+    },
+  });
+}
+
+function pnlRow(t) {
+  if (!t) return '<tr><td colspan="4" class="empty">No data</td></tr>';
+  const pnl = parseFloat(t.pnl);
+  return `<tr>
+    <td style="color:var(--subtle)">${t.timestamp.slice(0,10)}</td>
+    <td style="color:var(--blue);font-weight:600">${t.symbol}</td>
+    <td style="color:var(--subtle)">${t.action}</td>
+    <td style="color:${pnl>=0?'var(--green)':'var(--red)'}">${money(pnl)}</td>
+  </tr>`;
+}
+
+async function loadStats() {
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    if (s.error) return;
+
+    $('last-updated').textContent = 'Updated ' + new Date().toUTCString().slice(17,25) + ' UTC';
+
+    $('st-total').textContent = s.total_trades;
+    $('st-total-sub').textContent = `${s.win_rate}% win rate`;
+    $('st-wr').textContent = s.win_rate + '%';
+    $('st-wr').className = 'stat-val ' + (s.win_rate >= 50 ? 'pos' : 'neg');
+    $('st-wr-sub').textContent = `${s.win_rate >= 50 ? 'Profitable' : 'Below breakeven'}`;
+
+    const pf = parseFloat(s.profit_factor);
+    $('st-pf').textContent = pf.toFixed(2);
+    $('st-pf').className = 'stat-val ' + (pf >= 1.5 ? 'pos' : pf >= 1.0 ? '' : 'neg');
+
+    $('st-aw').textContent = money(s.avg_win);
+    $('st-al').textContent = money(s.avg_loss);
+
+    // Expectancy = (win_rate/100 * avg_win) - ((1-win_rate/100) * avg_loss)
+    const wr = s.win_rate / 100;
+    const exp = (wr * s.avg_win) - ((1 - wr) * s.avg_loss);
+    $('st-exp').textContent = money(exp);
+    $('st-exp').className = 'stat-val ' + (exp >= 0 ? 'pos' : 'neg');
+
+    buildEquityChart(s.equity_curve || [], s.initial_balance);
+    buildDailyChart(s.daily_pnl || []);
+
+    // By-symbol
+    const sb = $('sym-body');
+    if (!s.by_symbol || !s.by_symbol.length) {
+      sb.innerHTML = '<tr><td colspan="4" class="empty">No closed trades yet</td></tr>';
+    } else {
+      sb.innerHTML = s.by_symbol.map(r => `<tr>
+        <td style="color:var(--blue);font-weight:600">${r.symbol}</td>
+        <td>${r.trades}</td>
+        <td style="color:${r.win_rate>=50?'var(--green)':'var(--red)'}">${r.win_rate}%</td>
+        <td style="color:${r.pnl>=0?'var(--green)':'var(--red)'}">${money(r.pnl)}</td>
+      </tr>`).join('');
+    }
+
+    // Best trades (top 5)
+    const allClosed = [...(s.by_symbol || [])];  // use best/worst from endpoint
+    $('best-body').innerHTML = s.best_trade ? pnlRow(s.best_trade) : '<tr><td colspan="4" class="empty">No data</td></tr>';
+    $('worst-body').innerHTML = s.worst_trade ? pnlRow(s.worst_trade) : '<tr><td colspan="4" class="empty">No data</td></tr>';
+
+  } catch(e) { console.error('Stats:', e); }
+}
+
+loadStats();
+setInterval(loadStats, 60000);
+</script>
+</body>
+</html>

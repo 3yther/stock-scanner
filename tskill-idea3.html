@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T-SKiLL — Coming Soon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Stack+Sans+Notch:wght@200..700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100vw; height: 100vh; overflow: hidden; background: #000;
+      font-family: 'Stack Sans Notch', 'Space Grotesk', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Videos ── */
+    .vid {
+      position: fixed; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; opacity: 0; z-index: 1;
+      transition: opacity 1.2s ease;
+      transform-origin: center center;
+    }
+    .vid.show { opacity: 1; }
+    @keyframes kenburns {
+      from { transform: scale(1.0) translate(0%,0%); }
+      to   { transform: scale(1.13) translate(-1.5%,-1%); }
+    }
+    .ken-burns { animation: kenburns 14s linear forwards; }
+
+    /* Sunrise-specific Ken Burns + grade */
+    @keyframes kenburns-sunrise {
+      from { transform: scale(1.0) translate(0%,0%); }
+      to   { transform: scale(1.08) translate(-0.4%,-0.3%); }
+    }
+    .ken-burns-sunrise { animation: kenburns-sunrise 8s ease-in-out forwards; }
+    #v-sunrise { filter: brightness(1.1) saturate(1.2) sepia(0.15); }
+
+    /* ── Papers canvas (phases 2-5) ── */
+    #papers-cv {
+      position: fixed; inset: 0; z-index: 2;
+      opacity: 0; transition: opacity 1.2s ease; display: none;
+    }
+
+    /* ── Glitch canvas overlay (phase 3 only) ── */
+    #glitch-cv {
+      position: fixed; inset: 0; z-index: 6;
+      display: none; pointer-events: none;
+    }
+
+    /* ── Film grain canvas (phase 4) ── */
+    #grain-cv {
+      position: fixed; inset: 0; z-index: 9; pointer-events: none;
+      width: 100%; height: 100%;
+      opacity: 0; transition: opacity 0.6s ease;
+      image-rendering: pixelated;
+    }
+
+    /* ── Light rays canvas (phase 6-7) ── */
+    #rays-cv {
+      position: fixed; inset: 0; z-index: 4; pointer-events: none;
+      opacity: 0; transition: opacity 2.5s ease;
+    }
+
+    /* ── Colour/grade overlays ── */
+    #warm-overlay {
+      position: fixed; inset: 0;
+      background: linear-gradient(145deg, rgba(255,170,50,0.22) 0%, rgba(255,120,30,0.14) 50%, rgba(200,80,10,0.08) 100%);
+      mix-blend-mode: screen; z-index: 4; pointer-events: none;
+      opacity: 0; transition: opacity 3.5s ease;
+    }
+    #red-tint {
+      position: fixed; inset: 0; background: rgba(180,30,30,0.15);
+      z-index: 8; pointer-events: none;
+      opacity: 0; transition: opacity 1.2s ease;
+    }
+    #dark-overlay {
+      position: fixed; inset: 0; background: #000;
+      z-index: 3; pointer-events: none;
+      opacity: 0; transition: opacity 0.6s ease;
+    }
+    #vignette {
+      position: fixed; inset: 0;
+      background: radial-gradient(ellipse at 50% 50%, transparent 38%, rgba(0,0,0,0.55) 75%, rgba(0,0,0,0.88) 100%);
+      z-index: 5; pointer-events: none;
+    }
+    /* Instant white flash (no transition — must flicker at 80 ms) */
+    #flash-overlay {
+      position: fixed; inset: 0; background: #fff;
+      z-index: 20; pointer-events: none;
+      opacity: 0;
+    }
+
+    /* ── Typewriter cursor ── */
+    @keyframes blink-cursor {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+    .tw-cursor {
+      display: inline-block; margin-left: 1px;
+      animation: blink-cursor 0.55s step-end infinite;
+    }
+
+    /* ── Freeze text (phase 4) — typewriter, always white ── */
+    #freeze-text {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 15; pointer-events: none;
+      font-size: clamp(1rem, 2.8vw, 1.95rem); font-weight: 300; letter-spacing: 0.07em;
+      color: rgba(255,255,255,0.96); text-align: center; padding: 3rem;
+      text-shadow: 0 2px 30px rgba(0,0,0,0.9);
+      opacity: 0;
+    }
+
+    /* ── Reveal stage (phase 7) ── */
+    #reveal-stage {
+      position: fixed; inset: 0; z-index: 15; pointer-events: none;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: clamp(0.5rem, 1.4vh, 0.95rem); opacity: 0;
+    }
+    #coming-line1, #coming-line2 {
+      font-size: clamp(0.78rem, 1.7vw, 1.05rem); font-weight: 300; letter-spacing: 0.22em;
+      color: rgba(255,255,255,0.92); text-shadow: 0 2px 20px rgba(0,0,0,0.4);
+      min-height: 1.5em; text-align: center;
+    }
+    #logo-text {
+      font-size: clamp(3.2rem, 9.5vw, 8rem); font-weight: 700; letter-spacing: 0.13em;
+      color: rgba(8,18,50,0); text-shadow: 0 4px 50px rgba(0,0,0,0.2);
+      transform: scale(0.95);
+      transition: color 2.5s ease 0.45s, transform 1.5s ease 0.45s;
+    }
+    #logo-text.in { color: rgba(8,18,50,0.88); transform: scale(1.0); }
+    #tagline-text {
+      font-size: clamp(0.54rem, 1.25vw, 0.78rem); font-weight: 400; letter-spacing: 0.46em;
+      text-transform: uppercase; color: rgba(107,92,231,0);
+      transition: color 2.2s ease 1.3s;
+    }
+    #tagline-text.in { color: rgba(107,92,231,0.94); }
+    #credit-text {
+      font-size: clamp(0.42rem, 0.85vw, 0.58rem); font-weight: 200; letter-spacing: 0.28em;
+      color: rgba(255,255,255,0); margin-top: 0.2rem;
+      transition: color 2.5s ease 2.2s;
+    }
+    #credit-text.in { color: rgba(255,255,255,0.22); }
+
+    /* ── Start screen ── */
+    #start-screen {
+      position: fixed; inset: 0; background: #000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 2rem; z-index: 200; transition: opacity 1s ease;
+    }
+    #start-screen.fade-out { opacity: 0; pointer-events: none; }
+    #start-logo { font-size: clamp(2.5rem,8vw,6rem); font-weight: 700; letter-spacing: 0.14em; color: rgba(255,255,255,0.9); }
+    #start-sub  { font-size: clamp(0.6rem,1.4vw,0.82rem); font-weight: 300; letter-spacing: 0.35em; color: rgba(255,255,255,0.3); text-transform: uppercase; }
+    #start-btn  {
+      background: transparent; border: 1px solid rgba(255,255,255,0.28);
+      color: rgba(255,255,255,0.55); padding: 0.72rem 2.8rem;
+      font-family: inherit; font-size: 0.65rem; letter-spacing: 0.38em; text-transform: uppercase;
+      cursor: pointer; border-radius: 3px; transition: background 0.28s, color 0.28s, border-color 0.28s;
+      margin-top: 0.5rem;
+    }
+    #start-btn:hover:not(:disabled) { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); border-color: rgba(255,255,255,0.5); }
+    #start-btn:disabled { opacity: 0.35; cursor: default; }
+
+    /* ── Debug panel ── */
+    #debug-panel {
+      position: fixed; top: 1rem; left: 1rem;
+      background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px; padding: 0.7rem 1rem; z-index: 300; pointer-events: none;
+      font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.63rem; line-height: 1.75;
+      color: rgba(255,255,255,0.7); min-width: 280px; display: none;
+    }
+    #debug-panel .ok   { color: #5eef8a; }
+    #debug-panel .err  { color: #ff5f57; }
+    #debug-panel .wait { color: #ffbd2e; }
+    #debug-panel .dim  { color: rgba(255,255,255,0.35); font-size: 0.57rem; word-break: break-all; }
+
+    /* ── Replay ── */
+    #replay-btn {
+      position: fixed; bottom: 1.5rem; right: 1.5rem;
+      background: transparent; border: 1px solid rgba(255,255,255,0.18);
+      color: rgba(255,255,255,0.3); padding: 0.42rem 0.9rem;
+      font-family: inherit; font-size: 0.58rem; letter-spacing: 0.26em; text-transform: uppercase;
+      cursor: pointer; border-radius: 3px; z-index: 100;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.9s ease, background 0.25s, color 0.25s;
+    }
+    #replay-btn.show { opacity: 1; pointer-events: auto; }
+    #replay-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); }
+  </style>
+</head>
+<body>
+
+<div id="start-screen">
+  <div id="start-logo">T-SKiLL</div>
+  <div id="start-sub">A revision platform for T Level students</div>
+  <button id="start-btn" disabled>Loading videos…</button>
+</div>
+
+<!-- On-screen error banner for forest video -->
+<div id="forest-error-msg" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#c00;color:#fff;font-family:monospace;font-size:13px;padding:10px 14px;word-break:break-all;white-space:pre-wrap;"></div>
+
+<!-- Videos -->
+<video id="v-forest"  class="vid" muted playsinline preload="auto" loop></video>
+<video id="v-sunrise" class="vid" muted playsinline preload="auto" loop></video>
+
+<!-- Papers canvas -->
+<canvas id="papers-cv"></canvas>
+
+<!-- Overlays (z-order: dark 3 → warm/rays 4 → vignette 5 → glitch 6 → red-tint 7 → grain 9) -->
+<div id="dark-overlay"></div>
+<div id="warm-overlay"></div>
+<canvas id="rays-cv"></canvas>
+<div id="vignette"></div>
+<canvas id="glitch-cv"></canvas>
+<div id="red-tint"></div>
+<canvas id="grain-cv" width="256" height="256"></canvas>
+<div id="flash-overlay"></div>
+
+<!-- Text layers -->
+<p id="freeze-text"></p>
+<div id="reveal-stage">
+  <p id="coming-line1"></p>
+  <p id="coming-line2"></p>
+  <div id="logo-text">T-SKiLL</div>
+  <p id="tagline-text">coming soon</p>
+  <p id="credit-text">made by amir</p>
+</div>
+
+<!-- Debug panel -->
+<div id="debug-panel">
+  <div style="font-weight:600;margin-bottom:0.3rem;color:#fff">Video diagnostics</div>
+  <div id="dbg-forest"  class="wait">⏳ forest.mp4  — loading…</div>
+  <div id="dbg-sunrise" class="wait">⏳ sunrise.mp4 — loading…</div>
+  <div id="dbg-path" class="dim" style="margin-top:0.4rem"></div>
+  <div id="dbg-hint" class="dim" style="margin-top:0.4rem;display:none"></div>
+</div>
+
+<button id="replay-btn">Replay</button>
+
+<script>
+!function () {
+  'use strict';
+
+  var VID_FOREST  = './forest.mp4';
+  var VID_SUNRISE = './sunrise.mp4';
+
+  // ── DOM ───────────────────────────────────────────────────────────────────
+  var vForest      = document.getElementById('v-forest');
+  var vSunrise     = document.getElementById('v-sunrise');
+  var papersCV     = document.getElementById('papers-cv');
+  var papersCX     = papersCV.getContext('2d');
+  var glitchCV     = document.getElementById('glitch-cv');
+  var glitchCX     = glitchCV.getContext('2d');
+  var grainCV      = document.getElementById('grain-cv');
+  var grainCX      = grainCV.getContext('2d');
+  var raysCV       = document.getElementById('rays-cv');
+  var raysCX       = raysCV.getContext('2d');
+  var darkOvl      = document.getElementById('dark-overlay');
+  var warmOvl      = document.getElementById('warm-overlay');
+  var redTintEl    = document.getElementById('red-tint');
+  var flashEl      = document.getElementById('flash-overlay');
+  var freezeEl     = document.getElementById('freeze-text');
+  var revealEl     = document.getElementById('reveal-stage');
+  var comingLine1  = document.getElementById('coming-line1');
+  var comingLine2  = document.getElementById('coming-line2');
+  var logoEl       = document.getElementById('logo-text');
+  var taglineEl    = document.getElementById('tagline-text');
+  var creditEl     = document.getElementById('credit-text');
+  var startScr     = document.getElementById('start-screen');
+  var startBtn     = document.getElementById('start-btn');
+  var replayBtn    = document.getElementById('replay-btn');
+  var dbgPanel     = document.getElementById('debug-panel');
+  var dbgPath      = document.getElementById('dbg-path');
+  var dbgHint      = document.getElementById('dbg-hint');
+
+  var W, H;
+
+  var glitchSrc   = document.createElement('canvas');
+  var glitchSrcCX = glitchSrc.getContext('2d');
+
+  function resize() {
+    W = papersCV.width = glitchCV.width = raysCV.width = window.innerWidth;
+    H = papersCV.height = glitchCV.height = raysCV.height = window.innerHeight;
+    glitchSrc.width  = W;
+    glitchSrc.height = H;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  var lerp  = function (a, b, t) { return a + (b - a) * t; };
+  var clamp = function (x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; };
+  var eOut3 = function (t) { return 1 - Math.pow(1 - t, 3); };
+
+  var seqTimers = [];
+  function after(ms, fn) { seqTimers.push(setTimeout(fn, ms)); }
+  function clearTimers()  { seqTimers.forEach(clearTimeout); seqTimers = []; }
+
+  function showVid(v, dur) {
+    v.style.transition = 'opacity ' + (dur || 1200) + 'ms ease';
+    v.classList.add('show');
+  }
+  function hideVid(v, dur) {
+    v.style.transition = 'opacity ' + (dur || 1000) + 'ms ease';
+    v.classList.remove('show');
+  }
+  function safePlay(v) {
+    var p = v.play();
+    if (p && p.catch) p.catch(function (e) { console.warn('play blocked:', e); });
+  }
+  function resetKenBurns(v) {
+    v.classList.remove('ken-burns');
+    void v.offsetWidth;
+    v.classList.add('ken-burns');
+  }
+  function startSunriseKenBurns() {
+    vSunrise.classList.remove('ken-burns-sunrise');
+    void vSunrise.offsetWidth;
+    vSunrise.classList.add('ken-burns-sunrise');
+  }
+
+  // ── Typewriter ────────────────────────────────────────────────────────────
+  // Types `text` into `el` at `msPer` ms/char. Blinks cursor for 1 s after
+  // finish, removes it, then calls `onDone`.
+  function typewriter(el, text, msPer, onDone) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+    var cursor = document.createElement('span');
+    cursor.className = 'tw-cursor';
+    cursor.textContent = '|';
+    el.appendChild(cursor);
+
+    var i = 0;
+    function tick() {
+      if (i < text.length) {
+        el.insertBefore(document.createTextNode(text[i]), cursor);
+        i++;
+        seqTimers.push(setTimeout(tick, msPer));
+      } else {
+        seqTimers.push(setTimeout(function () {
+          if (cursor.parentNode) cursor.parentNode.removeChild(cursor);
+          if (onDone) onDone();
+        }, 1000));
+      }
+    }
+    tick();
+  }
+
+  // ── Film grain ────────────────────────────────────────────────────────────
+  var grainRaf = null;
+
+  function drawGrain() {
+    var imgData = grainCX.createImageData(256, 256);
+    var d = imgData.data;
+    for (var i = 0; i < d.length; i += 4) {
+      if (Math.random() < 0.14) {
+        d[i] = d[i+1] = d[i+2] = 255;
+        d[i+3] = Math.floor(Math.random() * 28);  // max opacity ~0.11
+      }
+    }
+    grainCX.putImageData(imgData, 0, 0);
+    grainRaf = requestAnimationFrame(drawGrain);
+  }
+  function startGrain() {
+    if (grainRaf) cancelAnimationFrame(grainRaf);
+    grainRaf = requestAnimationFrame(drawGrain);
+  }
+  function stopGrain() {
+    if (grainRaf) { cancelAnimationFrame(grainRaf); grainRaf = null; }
+    grainCX.clearRect(0, 0, 256, 256);
+  }
+
+  // ── Light rays ────────────────────────────────────────────────────────────
+  var raysRaf = null;
+  var raysTs  = 0;
+
+  function drawRays() {
+    raysCX.clearRect(0, 0, W, H);
+    var t   = (performance.now() - raysTs) * 0.001;
+    var cx  = W * 0.5;
+    var cy  = 0;
+    var len = Math.sqrt(W * W + H * H) * 1.1;
+
+    // 4 beams, slowly rotating at different rates
+    var baseAngles = [-0.38, -0.12, 0.14, 0.40];
+    var rates      = [ 0.014,  0.011, 0.018, 0.013];
+
+    for (var b = 0; b < 4; b++) {
+      var angle = baseAngles[b] + t * rates[b];
+      var hw    = len * Math.tan(0.055);   // half-width of beam
+
+      raysCX.save();
+      raysCX.translate(cx, cy);
+      raysCX.rotate(angle);
+
+      var grad = raysCX.createLinearGradient(0, 0, 0, len);
+      grad.addColorStop(0,    'rgba(255,215,140,0.12)');
+      grad.addColorStop(0.45, 'rgba(255,200,110,0.06)');
+      grad.addColorStop(1,    'rgba(255,190,90,0)');
+
+      raysCX.fillStyle = grad;
+      raysCX.beginPath();
+      raysCX.moveTo(0, 0);
+      raysCX.lineTo(-hw, len);
+      raysCX.lineTo( hw, len);
+      raysCX.closePath();
+      raysCX.fill();
+      raysCX.restore();
+    }
+
+    raysRaf = requestAnimationFrame(drawRays);
+  }
+  function startRays() {
+    raysTs = performance.now();
+    if (raysRaf) cancelAnimationFrame(raysRaf);
+    raysRaf = requestAnimationFrame(drawRays);
+  }
+  function stopRays() {
+    if (raysRaf) { cancelAnimationFrame(raysRaf); raysRaf = null; }
+    raysCX.clearRect(0, 0, W, H);
+  }
+
+  // ── Video loading ─────────────────────────────────────────────────────────
+  var vidLoaded = { forest: false, sunrise: false };
+  var anyError  = false;
+  var ERR_CODES = { 1:'ABORTED', 2:'NETWORK', 3:'DECODE', 4:'NOT_FOUND' };
+
+  dbgPanel.style.display = 'block';
+  dbgPath.textContent = 'forest: ' + VID_FOREST;
+
+  function onVidLoad(key) {
+    vidLoaded[key] = true;
+    var el = document.getElementById('dbg-' + key);
+    var v  = key === 'forest' ? vForest : vSunrise;
+    console.log('[video] ' + key + '.mp4 loaded OK — ' + v.videoWidth + '×' + v.videoHeight + ' src=' + v.src);
+    el.className = 'ok';
+    el.textContent = '✓ ' + key + '.mp4 ready (' + v.videoWidth + '×' + v.videoHeight + ')';
+    if (vidLoaded.forest && vidLoaded.sunrise) {
+      startBtn.disabled = false;
+      startBtn.textContent = 'Play';
+      dbgPanel.style.display = 'none';
+    }
+  }
+  function onVidError(key) {
+    anyError = true;
+    var el   = document.getElementById('dbg-' + key);
+    var v    = key === 'forest' ? vForest : vSunrise;
+    var code = v.error ? (ERR_CODES[v.error.code] || 'ERR ' + v.error.code) : 'unknown';
+    var msg  = v.error ? v.error.message : 'no error object';
+    console.error('[video] ' + key + '.mp4 FAILED — code=' + code + ' message="' + msg + '" src=' + v.src);
+    el.className = 'err';
+    el.textContent = '✗ ' + key + '.mp4 — ' + code;
+    startBtn.disabled = false;
+    startBtn.textContent = 'Play anyway';
+    dbgPanel.style.display = 'block';
+    if (key === 'forest') {
+      var errEl = document.getElementById('forest-error-msg');
+      if (errEl) {
+        errEl.textContent = 'forest.mp4 error: ' + code + ' — ' + msg + ' | src: ' + v.src;
+        errEl.style.display = 'block';
+      }
+    }
+    var isChrome = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent);
+    dbgHint.style.display = 'block';
+    dbgHint.innerHTML = isChrome
+      ? 'Chrome may block cross-folder file:// access.<br>Try opening in <strong style="color:#fff">Safari</strong>, or run:<br><span style="color:#ffd">python3 -m http.server 8080</span><br>from your home folder.'
+      : 'Check files exist in the same folder as this HTML file.';
+  }
+
+  vForest.addEventListener('loadeddata',  function () { onVidLoad('forest'); });
+  vForest.addEventListener('error',       function () { onVidError('forest'); });
+  vSunrise.addEventListener('loadeddata', function () { onVidLoad('sunrise'); });
+  vSunrise.addEventListener('error',      function () { onVidError('sunrise'); });
+
+  vForest.src  = VID_FOREST;
+  vSunrise.src = VID_SUNRISE;
+  vForest.load();
+  vSunrise.load();
+
+  // ── Papers animation ───────────────────────────────────────────────────────
+  var papers      = [];
+  var papersRaf   = null;
+  var papersMode  = 'idle';  // 'idle' | 'forward' | 'glitch' | 'freeze' | 'rewind'
+  var papersTs    = 0;
+  var glitchTs    = 0;
+  var glitchReady = false;
+
+  function buildPapers() {
+    papers = [];
+    var N = 40;
+    for (var i = 0; i < N; i++) {
+      var side = Math.floor(Math.random() * 4);
+      var sx, sy;
+      if      (side === 0) { sx = Math.random() * W;  sy = -200; }
+      else if (side === 1) { sx = W + 200;             sy = Math.random() * H; }
+      else if (side === 2) { sx = Math.random() * W;  sy = H + 200; }
+      else                 { sx = -200;                sy = Math.random() * H; }
+
+      var arriveAt = 300 + Math.sqrt(i / N) * 4550;
+      papers.push({
+        sx: sx, sy: sy,
+        ex: W * 0.08 + Math.random() * W * 0.84,
+        ey: H * 0.04 + Math.random() * H * 0.92,
+        w:  78 + Math.random() * 82,
+        h:  102 + Math.random() * 60,
+        rot:    (Math.random() - 0.5) * 0.6,
+        shade:  222 + Math.floor(Math.random() * 28),
+        arriveAt: arriveAt,
+        travelMs: 260 + Math.random() * 230
+      });
+    }
+    papers.sort(function (a, b) { return a.arriveAt - b.arriveAt; });
+  }
+
+  // `smear` adds a 2 px horizontal ghost during rewind
+  function drawOnePaper(ctx, p, t, smear) {
+    if (t <= 0) return;
+    var ease  = eOut3(Math.min(t, 1));
+    var alpha = Math.min(t * 5, 1) * (smear ? 0.88 : 1);
+    var px    = lerp(p.sx, p.ex, ease);
+    var py    = lerp(p.sy, p.ey, ease);
+    var pw    = smear ? p.w + 2 : p.w;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(px, py);
+    ctx.rotate(p.rot * ease);
+    ctx.shadowColor   = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur    = 12;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 5;
+    ctx.fillStyle = 'rgb(' + p.shade + ',' + (p.shade - 4) + ',' + (p.shade - 10) + ')';
+    ctx.fillRect(-pw / 2, -p.h / 2, pw, p.h);
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(130,120,110,0.22)';
+    ctx.lineWidth   = 0.5;
+    for (var ly = -p.h / 2 + 22; ly < p.h / 2 - 10; ly += 16) {
+      ctx.beginPath();
+      ctx.moveTo(-p.w / 2 + 11, ly);
+      ctx.lineTo( p.w / 2 - 11, ly);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Horizontal ghost trail during rewind
+    if (smear && alpha > 0.25) {
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.18;
+      ctx.translate(px + 2, py);
+      ctx.rotate(p.rot * ease);
+      ctx.shadowColor = 'transparent';
+      ctx.fillStyle = 'rgb(' + p.shade + ',' + (p.shade - 4) + ',' + (p.shade - 10) + ')';
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+  }
+
+  function drawPapersScene(ctx, papersTime, smear) {
+    var dg = ctx.createLinearGradient(0, 0, 0, H);
+    dg.addColorStop(0, '#1D1809');
+    dg.addColorStop(1, '#0E0B04');
+    ctx.fillStyle = dg;
+    ctx.fillRect(0, 0, W, H);
+    for (var i = 0; i < papers.length; i++) {
+      var p = papers[i];
+      var t = (papersTime - p.arriveAt) / p.travelMs;
+      drawOnePaper(ctx, p, t, smear);
+    }
+  }
+
+  function captureGlitchSrc() {
+    glitchSrc.width  = W;
+    glitchSrc.height = H;
+    drawPapersScene(glitchSrcCX, 5000, false);
+    glitchReady = true;
+  }
+
+  function drawGlitchFrame() {
+    if (!glitchReady) return;
+    var intensity = clamp((performance.now() - glitchTs) / 2000, 0, 1);
+    glitchCX.clearRect(0, 0, W, H);
+    glitchCX.drawImage(glitchSrc, 0, 0);
+    var strips = Math.ceil(H / 3);
+    for (var s = 0; s < strips; s++) {
+      var sy = s * 3, sh = Math.min(3, H - sy);
+      if (Math.random() < 0.12 * intensity) {
+        var kick = (Math.random() - 0.5) * 68 * intensity;
+        glitchCX.drawImage(glitchSrc, 0, sy, W, sh, kick, sy, W, sh);
+      }
+    }
+    var rOff = (Math.random() - 0.5) * 20 * intensity;
+    glitchCX.save();
+    glitchCX.globalCompositeOperation = 'lighter';
+    glitchCX.globalAlpha = 0.24 * intensity;
+    glitchCX.drawImage(glitchSrc,  rOff, 0);
+    glitchCX.globalAlpha = 0.18 * intensity;
+    glitchCX.drawImage(glitchSrc, -rOff * 1.4, 0);
+    glitchCX.restore();
+    if (Math.random() < 0.55 * intensity) {
+      glitchCX.fillStyle = 'rgba(255,0,55,' + (0.15 * intensity) + ')';
+      glitchCX.fillRect(0, Math.random() * H, W, 3 + Math.random() * 30);
+    }
+    if (Math.random() < 0.42 * intensity) {
+      glitchCX.fillStyle = 'rgba(0,80,255,' + (0.13 * intensity) + ')';
+      glitchCX.fillRect(0, Math.random() * H, W, 2 + Math.random() * 20);
+    }
+    if (Math.random() < 0.05 * intensity) {
+      glitchCX.fillStyle = 'rgba(255,255,255,' + (0.18 + Math.random() * 0.15) + ')';
+      glitchCX.fillRect(0, 0, W, H);
+    }
+    if (Math.random() < 0.3 * intensity) {
+      glitchCX.fillStyle = 'rgba(0,0,0,0.96)';
+      glitchCX.fillRect(0, Math.random() * H, W, 1 + Math.random() * 2);
+    }
+  }
+
+  function papersLoop(ts) {
+    var papersTime;
+    var smear = false;
+
+    if (papersMode === 'forward') {
+      papersTime = clamp(ts - papersTs, 0, 5000);
+    } else if (papersMode === 'glitch' || papersMode === 'freeze') {
+      papersTime = 5000;
+    } else if (papersMode === 'rewind') {
+      var elapsed = ts - papersTs;
+      papersTime  = clamp(5000 * (1 - elapsed / 2000), 0, 5000);
+      smear       = true;
+    } else {
+      return;
+    }
+
+    drawPapersScene(papersCX, papersTime, smear);
+    if (papersMode === 'glitch') drawGlitchFrame();
+    papersRaf = requestAnimationFrame(papersLoop);
+  }
+
+  function startPapersLoop() {
+    if (papersRaf) cancelAnimationFrame(papersRaf);
+    papersRaf = requestAnimationFrame(papersLoop);
+  }
+  function stopPapersLoop() {
+    papersMode = 'idle';
+    if (papersRaf) { cancelAnimationFrame(papersRaf); papersRaf = null; }
+  }
+
+  // ── Main sequence ─────────────────────────────────────────────────────────
+  function run() {
+    clearTimers();
+    stopPapersLoop();
+    stopGrain();
+    stopRays();
+
+    // Reset videos
+    [vForest, vSunrise].forEach(function (v) {
+      hideVid(v, 0); v.style.transition = 'none';
+      v.classList.remove('ken-burns');
+      v.classList.remove('ken-burns-sunrise');
+      v.playbackRate = 1; v.pause();
+      try { v.currentTime = 0; } catch (e) {}
+    });
+
+    // Reset canvases
+    papersCV.style.display    = 'none';
+    papersCV.style.opacity    = '0';
+    papersCV.style.transition = 'none';
+    glitchCV.style.display    = 'none';
+    glitchCX.clearRect(0, 0, W, H);
+    glitchReady = false;
+    raysCV.style.opacity = '0';
+
+    // Reset overlays
+    darkOvl.style.transition  = 'none'; darkOvl.style.opacity  = '0';
+    warmOvl.style.transition  = 'none'; warmOvl.style.opacity  = '0';
+    redTintEl.style.transition = 'none'; redTintEl.style.opacity = '0';
+    flashEl.style.opacity = '0';
+    grainCV.style.opacity = '0';
+
+    // Reset text
+    freezeEl.style.opacity = '0';
+    while (freezeEl.firstChild) freezeEl.removeChild(freezeEl.firstChild);
+    revealEl.style.opacity = '0';
+    while (comingLine1.firstChild) comingLine1.removeChild(comingLine1.firstChild);
+    while (comingLine2.firstChild) comingLine2.removeChild(comingLine2.firstChild);
+    [logoEl, taglineEl, creditEl].forEach(function (el) { el.classList.remove('in'); });
+    replayBtn.classList.remove('show');
+
+    // ── PHASE 1 — Forest (0–5 s) ─────────────────────────────────────────────
+    after(80, function () {
+      vForest.currentTime = 0;
+      safePlay(vForest);
+      showVid(vForest, 900);
+      after(300, function () { vForest.classList.add('ken-burns'); });
+    });
+
+    // ── PHASE 2 — Papers piling up (4–10 s) ──────────────────────────────────
+    after(4000, function () {
+      buildPapers();
+      papersMode = 'forward';
+      papersTs   = performance.now();
+      papersCV.style.display    = 'block';
+      papersCV.style.transition = 'opacity 1.2s ease';
+      setTimeout(function () { papersCV.style.opacity = '1'; }, 40);
+      startPapersLoop();
+      after(700, function () { hideVid(vForest, 900); });
+    });
+
+    // ── PHASE 3 — Glitch (10–12 s) ───────────────────────────────────────────
+    after(10000, function () {
+      captureGlitchSrc();
+      papersMode = 'glitch';
+      glitchTs   = performance.now();
+      glitchCV.style.display = 'block';
+    });
+
+    // ── PHASE 4 — Freeze (12–15 s) ───────────────────────────────────────────
+    after(12000, function () {
+      papersMode = 'freeze';
+      glitchCV.style.display = 'none';
+      glitchCX.clearRect(0, 0, W, H);
+
+      darkOvl.style.transition = 'opacity 0.8s ease';
+      darkOvl.style.opacity    = '0.2';
+
+      // Red tint + film grain
+      redTintEl.style.transition = 'opacity 1.2s ease';
+      redTintEl.style.opacity    = '1';
+      grainCV.style.opacity      = '1';
+      startGrain();
+
+      // Typewriter: 50 chars × 60 ms = 3 s, fits exactly in the 3 s freeze window
+      freezeEl.style.opacity = '1';
+      typewriter(freezeEl, 'This is what T Level students deal with every day.', 60, null);
+    });
+
+    // ── Pre-rewind white flickers (14.4–14.9 s) ───────────────────────────────
+    after(14400, function () { flashEl.style.opacity = '1'; });
+    after(14480, function () { flashEl.style.opacity = '0'; });
+    after(14560, function () { flashEl.style.opacity = '1'; });
+    after(14640, function () { flashEl.style.opacity = '0'; });
+    after(14720, function () { flashEl.style.opacity = '1'; });
+    after(14800, function () { flashEl.style.opacity = '0'; });
+
+    // ── PHASE 5 — Rewind (15–17 s) ───────────────────────────────────────────
+    after(15000, function () {
+      darkOvl.style.transition  = 'opacity 0.4s ease';
+      darkOvl.style.opacity     = '0';
+      redTintEl.style.transition = 'opacity 0.6s ease';
+      redTintEl.style.opacity   = '0';
+      grainCV.style.opacity     = '0';
+      after(600, stopGrain);
+
+      // Clear freeze text cleanly
+      freezeEl.style.opacity = '0';
+      after(300, function () {
+        while (freezeEl.firstChild) freezeEl.removeChild(freezeEl.firstChild);
+      });
+
+      papersMode = 'rewind';
+      papersTs   = performance.now();
+    });
+
+    // ── End of rewind + white flash → forest breakthrough (17 s) ─────────────
+    after(17000, function () {
+      stopPapersLoop();
+      papersCV.style.transition = 'opacity 0.6s ease';
+      papersCV.style.opacity    = '0';
+      after(600, function () { papersCV.style.display = 'none'; });
+
+      // White flash
+      flashEl.style.opacity = '1';
+      after(220, function () { flashEl.style.opacity = '0'; });
+
+      // ── PHASE 6 — Breakthrough (17–22 s) ─────────────────────────────────
+      after(140, function () {
+        vForest.currentTime = 0;
+        safePlay(vForest);
+        resetKenBurns(vForest);
+        showVid(vForest, 1400);
+
+        after(2000, function () {
+          vSunrise.currentTime = 0;
+          safePlay(vSunrise);
+          startSunriseKenBurns();
+          showVid(vSunrise, 2200);
+          after(1000, function () { hideVid(vForest, 1600); });
+          after(600, function () {
+            warmOvl.style.transition = 'opacity 3.5s ease';
+            warmOvl.style.opacity    = '1';
+            // Light rays fade in alongside warm overlay
+            raysCV.style.opacity = '1';
+            startRays();
+          });
+        });
+      });
+    });
+
+    // ── PHASE 7 — Reveal (22–28 s) ───────────────────────────────────────────
+    after(22000, function () {
+      revealEl.style.transition = 'none';
+      revealEl.style.opacity    = '1';
+
+      // Line 1: "Coming Soon" — 11 chars × 50 ms = 550 ms typing + 1 s cursor = onDone at ~1550 ms
+      typewriter(comingLine1, 'Coming Soon', 50, function () {
+        // Line 2 starts immediately after cursor cleared on line 1
+        typewriter(comingLine2, '— September', 50, function () {
+          // Both lines done — fade in logo (scale + color), then tagline, credit
+          after(300,  function () { logoEl.classList.add('in'); });
+          after(1400, function () { taglineEl.classList.add('in'); });
+          after(2100, function () { creditEl.classList.add('in'); });
+        });
+      });
+    });
+
+    after(28000, function () { replayBtn.classList.add('show'); });
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  startBtn.addEventListener('click', function () {
+    if (startBtn.disabled) return;
+    startScr.classList.add('fade-out');
+    after(1050, function () { startScr.style.display = 'none'; });
+    if (!anyError) dbgPanel.style.display = 'none';
+    run();
+  });
+
+  replayBtn.addEventListener('click', function () {
+    replayBtn.classList.remove('show');
+    run();
+  });
+
+}();
+</script>
+</body>
+</html>

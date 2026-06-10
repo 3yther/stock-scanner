@@ -1,23 +1,16 @@
 """
 Database layer — PostgreSQL when DATABASE_URL is set (Railway), SQLite locally.
-
-PostgreSQL connection is managed through a ThreadedConnectionPool so the
-single shared pool handles Flask + scanner + trader thread concurrency safely.
-
-SQLite is kept as a zero-config fallback for local development.
 """
 
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 import config
 
-# ─── Backend detection ─────────────────────────────────────────────────────
-
 _DB_URL = os.getenv("DATABASE_URL", "")
-# Railway Postgres gives "postgres://" but psycopg2 requires "postgresql://"
 if _DB_URL.startswith("postgres://"):
     _DB_URL = _DB_URL.replace("postgres://", "postgresql://", 1)
 
@@ -30,11 +23,8 @@ if USE_PG:
     _pool = psycopg2.pool.ThreadedConnectionPool(1, 10, _DB_URL)
 
 
-# ─── Connection context manager ────────────────────────────────────────────
-
 @contextmanager
 def _conn():
-    """Yield a connection, commit on success, rollback on error."""
     if USE_PG:
         conn = _pool.getconn()
         try:
@@ -57,10 +47,7 @@ def _conn():
             conn.close()
 
 
-# ─── Schema ────────────────────────────────────────────────────────────────
-
 def init_db():
-    """Create tables if they don't exist. Safe to call multiple times."""
     with _conn() as conn:
         if USE_PG:
             cur = conn.cursor()
@@ -82,6 +69,14 @@ def init_db():
                     value TEXT NOT NULL
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS equity_snapshots (
+                    date             TEXT PRIMARY KEY,
+                    equity           DOUBLE PRECISION NOT NULL,
+                    balance          DOUBLE PRECISION NOT NULL,
+                    positions_value  DOUBLE PRECISION NOT NULL DEFAULT 0.0
+                )
+            """)
             cur.close()
         else:
             conn.executescript("""
@@ -99,13 +94,19 @@ def init_db():
                     key   TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS equity_snapshots (
+                    date             TEXT PRIMARY KEY,
+                    equity           REAL NOT NULL,
+                    balance          REAL NOT NULL,
+                    positions_value  REAL NOT NULL DEFAULT 0.0
+                );
             """)
 
 
 init_db()
 
 
-# ─── CRUD ──────────────────────────────────────────────────────────────────
+# ── CRUD ──────────────────────────────────────────────────────────────────
 
 def log_trade(trade: dict[str, Any]):
     with _conn() as conn:
@@ -144,6 +145,24 @@ def get_recent_trades(limit: int = 100) -> list[dict]:
             ).fetchall()]
 
 
+def get_all_trades(limit: int = 2000) -> list[dict]:
+    """For stats page — larger limit, chronological order."""
+    with _conn() as conn:
+        if USE_PG:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                "SELECT * FROM trades ORDER BY timestamp ASC LIMIT %s", (limit,)
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+            return rows
+        else:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM trades ORDER BY timestamp ASC LIMIT ?", (limit,)
+            ).fetchall()]
+
+
 def get_kill_switch() -> bool:
     with _conn() as conn:
         if USE_PG:
@@ -174,3 +193,43 @@ def set_kill_switch(active: bool):
                 "INSERT OR REPLACE INTO bot_state (key, value) VALUES ('kill_switch', ?)",
                 (val,),
             )
+
+
+# ── Equity snapshots ──────────────────────────────────────────────────────
+
+def save_equity_snapshot(equity: float, balance: float, pos_value: float):
+    day = datetime.utcnow().date().isoformat()
+    with _conn() as conn:
+        if USE_PG:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO equity_snapshots (date, equity, balance, positions_value)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (date) DO UPDATE
+                   SET equity = EXCLUDED.equity,
+                       balance = EXCLUDED.balance,
+                       positions_value = EXCLUDED.positions_value""",
+                (day, equity, balance, pos_value),
+            )
+            cur.close()
+        else:
+            conn.execute(
+                """INSERT OR REPLACE INTO equity_snapshots
+                   (date, equity, balance, positions_value) VALUES (?, ?, ?, ?)""",
+                (day, equity, balance, pos_value),
+            )
+
+
+def get_equity_snapshots() -> list[dict]:
+    with _conn() as conn:
+        if USE_PG:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM equity_snapshots ORDER BY date")
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+            return rows
+        else:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM equity_snapshots ORDER BY date"
+            ).fetchall()]
