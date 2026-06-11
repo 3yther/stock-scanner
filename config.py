@@ -6,57 +6,34 @@ load_dotenv()
 EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 
-# ── Universe: 60 symbols (top S&P 500 + SPCX) ─────────────────────────────
+# ── Universe: 24 symbols ───────────────────────────────────────────────────
 SYMBOLS = [
-    # Original 21
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    "BRK-B", "JPM", "JNJ", "V", "PG", "UNH", "HD", "MA",
-    "BAC", "XOM", "PFE", "ABBV", "COST", "SPCX",
-    # Next 39 most liquid S&P 500
-    "LLY", "AVGO", "WMT", "ORCL", "CRM", "CVX", "MRK", "AMD", "ADBE", "NFLX",
-    "PEP", "KO", "TMO", "CSCO", "ACN", "MCD", "ABT", "LIN", "INTC", "DIS",
-    "WFC", "VZ", "CAT", "INTU", "IBM", "QCOM", "GE", "AMGN", "NOW", "ISRG",
-    "SPGI", "UBER", "T", "NEE", "RTX", "BKNG", "PM", "GS", "HON",
+    "JPM",  "JNJ",  "V",     "PG",   "UNH",  "HD",   "MA",
+    "BAC",  "XOM",  "PFE",   "ABBV", "COST", "BRK-B",
+    "SPCX", "SPY",  "QQQ",   "AMD",
 ]
 
 # ── Sector mapping ─────────────────────────────────────────────────────────
 SECTOR_MAP: dict[str, str] = {
     # Technology
     "AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
-    "META": "Technology", "AVGO": "Technology", "ORCL": "Technology",
-    "CRM":  "Technology", "AMD":  "Technology", "ADBE": "Technology",
-    "CSCO": "Technology", "ACN":  "Technology", "INTU": "Technology",
-    "IBM":  "Technology", "QCOM": "Technology", "NOW":  "Technology",
-    "INTC": "Technology",
-    # Consumer Discretionary
-    "AMZN": "Disc.",       "TSLA": "Disc.",       "HD":   "Disc.",
-    "MCD":  "Disc.",       "BKNG": "Disc.",        "UBER": "Disc.",
-    "NFLX": "Disc.",
+    "META": "Technology", "AMD":  "Technology",
     # Communication Services
-    "GOOGL": "Comm.",  "VZ": "Comm.",  "DIS": "Comm.",  "T": "Comm.",
+    "GOOGL": "Comm.",
+    # Consumer Discretionary
+    "AMZN": "Disc.", "TSLA": "Disc.", "HD": "Disc.",
     # Financials
-    "BRK-B": "Financials", "JPM": "Financials", "V":  "Financials",
-    "MA":    "Financials", "BAC": "Financials", "WFC": "Financials",
-    "GS":    "Financials", "SPGI": "Financials",
+    "JPM":   "Financials", "V":    "Financials", "MA":   "Financials",
+    "BAC":   "Financials", "BRK-B":"Financials",
     # Health Care
-    "JNJ": "Health",  "UNH":  "Health",  "PFE":  "Health",
-    "ABBV": "Health", "LLY":  "Health",  "MRK":  "Health",
-    "TMO": "Health",  "ABT":  "Health",  "AMGN": "Health",
-    "ISRG": "Health",
+    "JNJ":  "Health", "UNH":  "Health", "PFE":  "Health", "ABBV": "Health",
     # Consumer Staples
-    "PG":   "Staples", "COST": "Staples", "PEP": "Staples",
-    "KO":   "Staples", "PM":   "Staples", "WMT": "Staples",
-    # Industrials
-    "CAT": "Industrials", "GE":  "Industrials",
-    "RTX": "Industrials", "HON": "Industrials",
+    "PG": "Staples", "COST": "Staples",
     # Energy
-    "XOM": "Energy", "CVX": "Energy",
-    # Materials
-    "LIN": "Materials",
-    # Utilities
-    "NEE": "Utilities",
+    "XOM": "Energy",
     # ETF
-    "SPCX": "ETF",
+    "SPCX": "ETF", "SPY": "ETF", "QQQ": "ETF",
 }
 
 MAX_POSITIONS       = 3       # max simultaneous open positions
