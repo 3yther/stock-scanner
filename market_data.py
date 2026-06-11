@@ -1,158 +1,212 @@
 """
-Shared yfinance data layer with in-process caching.
+market_data.py — Alpha Vantage backend.
 
-Fetch strategy:
-  batch_scan_populate() submits all 60 + SPY as parallel individual downloads
-  (ThreadPoolExecutor, 10 workers).  concurrent.futures.wait(timeout=45) sets
-  the wall clock; executor.shutdown(wait=False) ensures we never block on a
-  hung thread.  socket.setdefaulttimeout(15) makes the underlying network calls
-  actually raise instead of hanging indefinitely.
+Endpoints used:
+  Daily   : TIME_SERIES_DAILY   (compact = last 100 trading days)
+  Intraday: TIME_SERIES_INTRADAY interval=60min (compact = last 100 hours)
+
+Rate limit: Alpha Vantage free tier = 5 requests/minute → 12 s between requests.
+  60 symbols × 2 endpoints = 120 requests → ~24 min cold scan.
+  Cache TTL = 4 hours: after the cold scan every cycle is instant until cache expires.
+  With 25 req/day free plan only 1 cold scan is possible; upgrade to 500 req/day
+  standard plan ($50/mo) for production use.
+
+Set ALPHA_VANTAGE_KEY in your .env file or Railway environment variables.
 """
 
-import concurrent.futures
-import socket
-import sys
-import time
+import os
 import threading
+import time
 from datetime import datetime
 
 import pandas as pd
-import yfinance as yf
+import requests as _http
 
-# Socket-level timeout — propagates into every yfinance network call.
-# Without this, ThreadPoolExecutor.shutdown(wait=False) abandons the thread
-# but the underlying socket blocks until the OS gives up (could be minutes).
-socket.setdefaulttimeout(15)
+# ── Config ────────────────────────────────────────────────────────────────
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+_AV_BASE          = "https://www.alphavantage.co/query"
+_MIN_INTERVAL     = 12.0   # seconds between requests (5 req/min free tier)
+_CACHE_TTL        = 4 * 3600  # 4 hours — reuse data between scans
+_HTTP_TIMEOUT     = 20     # seconds per request
 
-_PARALLEL_WORKERS = 10
-_BATCH_WALL_SECS  = 45   # give up on any unfinished parallel downloads
-
-# ── Per-symbol OHLC cache ─────────────────────────────────────────────────
-_cache: dict[str, dict] = {}
-_CACHE_TTL  = 240
+# ── In-process cache ──────────────────────────────────────────────────────
+_cache: dict[str, dict] = {}   # symbol → {"daily": df, "hourly": df, "ts": float}
 _cache_lock = threading.Lock()
 
-# ── Earnings cache ────────────────────────────────────────────────────────
-_earnings_cache: dict[str, bool] = {}
+# ── Rate-limiter state ────────────────────────────────────────────────────
+_last_req_ts: float = 0.0
+_rl_lock = threading.Lock()
 
 
-# ── Normalisation helpers ─────────────────────────────────────────────────
+# ── Rate limiter ──────────────────────────────────────────────────────────
 
-def _normalise(df: pd.DataFrame, symbol: str) -> pd.DataFrame | None:
-    if df is None or df.empty:
+def _rate_limit() -> None:
+    """Block until at least _MIN_INTERVAL seconds have passed since last request."""
+    global _last_req_ts
+    with _rl_lock:
+        elapsed = time.time() - _last_req_ts
+        if elapsed < _MIN_INTERVAL:
+            wait = _MIN_INTERVAL - elapsed
+            print(f"  [AV] rate limit — sleeping {wait:.1f}s", flush=True)
+            time.sleep(wait)
+        _last_req_ts = time.time()
+
+
+# ── HTTP helper ───────────────────────────────────────────────────────────
+
+def _av_get(params: dict) -> dict | None:
+    """Make one Alpha Vantage request with rate limiting and error handling."""
+    if not ALPHA_VANTAGE_KEY:
+        print("  [AV] ALPHA_VANTAGE_KEY not set — cannot fetch data", flush=True)
         return None
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df.xs(symbol, axis=1, level=1) \
-            if symbol in df.columns.get_level_values(1) \
-            else df.droplevel(1, axis=1)
-    return _normalise_flat(df)
 
+    _rate_limit()
+    url_params = {**params, "apikey": ALPHA_VANTAGE_KEY}
+    print(f"  [AV] GET function={params.get('function')} symbol={params.get('symbol', '?')}", flush=True)
 
-def _normalise_flat(df: pd.DataFrame) -> pd.DataFrame | None:
-    if df is None or df.empty:
-        return None
-    df = df.copy()
-    df.columns = [str(c).lower().replace(" ", "_") for c in df.columns]
-    df = df.reset_index()
-    for col in df.columns:
-        if col.lower() in ("date", "datetime", "index"):
-            df = df.rename(columns={col: "datetime"})
-            break
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    if df["datetime"].dt.tz is not None:
-        df["datetime"] = df["datetime"].dt.tz_convert(None)
-    df = df.sort_values("datetime").reset_index(drop=True)
-    if not {"open", "high", "low", "close", "volume"}.issubset(set(df.columns)):
-        return None
-    return df[["datetime", "open", "high", "low", "close", "volume"]]
-
-
-# ── Core per-symbol fetch ─────────────────────────────────────────────────
-
-def _fetch_simple(symbol: str, period: str, interval: str) -> pd.DataFrame | None:
-    """
-    Bare yf.download call — no ThreadPoolExecutor wrapper.
-    socket.setdefaulttimeout(15) provides the real timeout; any exception
-    (including socket timeout) is caught and returns None.
-    """
     try:
-        print(f"  [fetch] {symbol} {interval} {period}", flush=True)
-        df = yf.download(
-            symbol, period=period, interval=interval,
-            progress=False, auto_adjust=True,
-        )
-        result = _normalise(df, symbol)
-        rows = len(result) if result is not None else 0
-        print(f"  [fetch] {symbol} {interval} → {rows} rows", flush=True)
-        return result
+        r = _http.get(_AV_BASE, params=url_params, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
     except Exception as e:
-        print(f"  [fetch] {symbol} {interval} ERROR: {e}", flush=True)
+        print(f"  [AV] request error: {e}", flush=True)
         return None
 
+    # AV signals rate-limit exceeded with a "Note" key
+    if "Note" in data:
+        print(f"  [AV] rate-limit note: {data['Note'][:100]}", flush=True)
+        print(f"  [AV] sleeping 60s then continuing", flush=True)
+        time.sleep(60)
+        return None
 
-def fetch(symbol: str, period: str, interval: str) -> pd.DataFrame | None:
-    return _fetch_simple(symbol, period, interval)
+    # AV signals API key problems or quota exhaustion with "Information"
+    if "Information" in data:
+        print(f"  [AV] API info: {data['Information'][:120]}", flush=True)
+        return None
+
+    return data
 
 
-# ── Batch parallel prefetch ───────────────────────────────────────────────
+# ── Response parsers ──────────────────────────────────────────────────────
+
+def _parse_daily(data: dict | None, symbol: str) -> pd.DataFrame | None:
+    if not data:
+        return None
+    ts = data.get("Time Series (Daily)")
+    if not ts:
+        print(f"  [AV] {symbol} daily: unexpected keys {list(data.keys())[:4]}", flush=True)
+        return None
+    rows = []
+    for date_str, vals in ts.items():
+        try:
+            rows.append({
+                "datetime": pd.Timestamp(date_str),
+                "open":     float(vals["1. open"]),
+                "high":     float(vals["2. high"]),
+                "low":      float(vals["3. low"]),
+                "close":    float(vals["4. close"]),
+                "volume":   float(vals["5. volume"]),
+            })
+        except Exception:
+            continue
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
+    # Keep most recent 60 trading days (enough for MACD-26 + 20-day vol + 20-day RS)
+    return df.tail(60).reset_index(drop=True)
+
+
+def _parse_intraday(data: dict | None, symbol: str) -> pd.DataFrame | None:
+    if not data:
+        return None
+    ts = data.get("Time Series (60min)")
+    if not ts:
+        print(f"  [AV] {symbol} intraday: unexpected keys {list(data.keys())[:4]}", flush=True)
+        return None
+    rows = []
+    for dt_str, vals in ts.items():
+        try:
+            rows.append({
+                "datetime": pd.Timestamp(dt_str),
+                "open":     float(vals["1. open"]),
+                "high":     float(vals["2. high"]),
+                "low":      float(vals["3. low"]),
+                "close":    float(vals["4. close"]),
+                "volume":   float(vals["5. volume"]),
+            })
+        except Exception:
+            continue
+    if not rows:
+        return None
+    df = pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
+    # Keep last 100 hourly bars (~2.5 weeks of trading hours — enough for MACD-26)
+    return df.tail(100).reset_index(drop=True)
+
+
+# ── Per-symbol fetch ──────────────────────────────────────────────────────
+
+def _fetch_symbol(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Fetch daily + intraday for one symbol. Makes 2 API calls (rate limited)."""
+    daily_data = _av_get({
+        "function":   "TIME_SERIES_DAILY",
+        "symbol":     symbol,
+        "outputsize": "compact",
+    })
+    df_d = _parse_daily(daily_data, symbol)
+
+    hourly_data = _av_get({
+        "function":   "TIME_SERIES_INTRADAY",
+        "symbol":     symbol,
+        "interval":   "60min",
+        "outputsize": "compact",
+    })
+    df_h = _parse_intraday(hourly_data, symbol)
+
+    d_rows = len(df_d) if df_d is not None else 0
+    h_rows = len(df_h) if df_h is not None else 0
+    print(f"  [AV] {symbol} fetched — daily={d_rows} rows  hourly={h_rows} rows", flush=True)
+    return df_d, df_h
+
+
+# ── Batch prefetch ────────────────────────────────────────────────────────
 
 def batch_scan_populate(symbols: list[str]) -> None:
     """
-    Fetch daily (30d) + hourly (5d) for all symbols + SPY in parallel.
+    Fetch every stale symbol sequentially respecting the 5 req/min rate limit.
 
-    Uses ThreadPoolExecutor(10 workers) + concurrent.futures.wait(timeout=45).
-    executor.shutdown(wait=False) means we never block on a hung download —
-    the socket.setdefaulttimeout(15) will eventually kill those threads naturally.
+    First call (cold cache): fetches all 60+SPY → ~24 min.
+    Subsequent calls within 4 hours: all cached → instant.
     """
     all_syms = list(dict.fromkeys(symbols + ["SPY"]))
     now = time.time()
-    print(
-        f"  [market_data] batch prefetch start — {len(all_syms)} symbols"
-        f"  ({_PARALLEL_WORKERS} workers, {_BATCH_WALL_SECS}s wall)",
-        flush=True,
-    )
 
-    def _fetch_both(sym: str):
-        df_d = _fetch_simple(sym, "30d", "1d")
-        df_h = _fetch_simple(sym, "5d",  "1h")
-        return sym, df_d, df_h
-
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=_PARALLEL_WORKERS)
-    future_to_sym = {executor.submit(_fetch_both, sym): sym for sym in all_syms}
-
-    done, not_done = concurrent.futures.wait(
-        future_to_sym.keys(), timeout=_BATCH_WALL_SECS
-    )
-    # Critical: don't block on hung threads — socket timeout will clean them up
-    executor.shutdown(wait=False)
-
-    populated = 0
     with _cache_lock:
-        for future in done:
-            sym = future_to_sym[future]
-            try:
-                _, df_d, df_h = future.result()
-                _cache[sym] = {"daily": df_d, "hourly": df_h, "ts": now}
-                if df_d is not None:
-                    populated += 1
-            except Exception as e:
-                print(f"  [market_data] {sym} result error: {e}", flush=True)
-                _cache[sym] = {"daily": None, "hourly": None, "ts": now}
+        stale = [s for s in all_syms
+                 if s not in _cache or now - _cache[s].get("ts", 0) >= _CACHE_TTL]
 
-        for future in not_done:
-            sym = future_to_sym[future]
-            print(f"  [market_data] {sym}: still running at {_BATCH_WALL_SECS}s wall — marking no_data", flush=True)
-            _cache[sym] = {"daily": None, "hourly": None, "ts": now}
+    if not stale:
+        print(f"  [AV] all {len(all_syms)} symbols fresh in cache — skipping fetch", flush=True)
+        return
 
-    elapsed = time.time() - now
+    est_min = len(stale) * 2 * _MIN_INTERVAL / 60
     print(
-        f"  [market_data] batch done — {populated}/{len(all_syms)} populated"
-        f"  in {elapsed:.1f}s  ({len(not_done)} timed out)",
+        f"  [AV] fetching {len(stale)}/{len(all_syms)} stale symbols"
+        f" (est {est_min:.0f} min at 5 req/min)…",
         flush=True,
     )
 
+    for i, sym in enumerate(stale, 1):
+        print(f"  [AV] [{i}/{len(stale)}] fetching {sym}…", flush=True)
+        df_d, df_h = _fetch_symbol(sym)
+        with _cache_lock:
+            _cache[sym] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
 
-# ── Cache-aware OHLC getter ───────────────────────────────────────────────
+    with _cache_lock:
+        populated = sum(1 for s in stale if _cache.get(s, {}).get("daily") is not None)
+    print(f"  [AV] batch done — {populated}/{len(stale)} symbols populated", flush=True)
+
+
+# ── Public OHLC getter ────────────────────────────────────────────────────
 
 def get_ohlc(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     now = time.time()
@@ -160,27 +214,18 @@ def get_ohlc(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
         cached = _cache.get(symbol)
     if cached and now - cached["ts"] < _CACHE_TTL:
         return cached["daily"], cached["hourly"]
-
-    df_d = _fetch_simple(symbol, "30d", "1d")
-    df_h = _fetch_simple(symbol, "5d",  "1h")
+    # Single-symbol fallback (batch_scan_populate normally pre-fills this)
+    df_d, df_h = _fetch_symbol(symbol)
     with _cache_lock:
-        _cache[symbol] = {"daily": df_d, "hourly": df_h, "ts": now}
+        _cache[symbol] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
     return df_d, df_h
 
 
 def get_price(symbol: str) -> float | None:
-    """Latest price via yf.download (1-minute bar), falls back to cached daily close."""
-    try:
-        df = yf.download(symbol, period="1d", interval="1m",
-                         progress=False, auto_adjust=True)
-        df_n = _normalise(df, symbol)
-        if df_n is not None and len(df_n):
-            return float(df_n["close"].iloc[-1])
-    except Exception:
-        pass
+    """Return latest close from cached daily data — no extra API call."""
     with _cache_lock:
         cached = _cache.get(symbol)
-    if cached and cached["daily"] is not None:
+    if cached and cached["daily"] is not None and len(cached["daily"]):
         return float(cached["daily"]["close"].iloc[-1])
     return None
 
@@ -197,28 +242,22 @@ def _get_spy_daily() -> pd.DataFrame | None:
         cached = _cache.get("SPY")
     if cached and cached["daily"] is not None:
         return cached["daily"]
-    # SPY needs 60d for the 50-day SMA (batch only fetches 30d for other symbols)
-    df = _fetch_simple("SPY", "60d", "1d")
+    # Force-fetch if not cached (batch_scan_populate should have done this already)
+    df_d, df_h = _fetch_symbol("SPY")
     with _cache_lock:
-        if "SPY" not in _cache:
-            _cache["SPY"] = {"daily": None, "hourly": None, "ts": 0.0}
-        _cache["SPY"]["daily"] = df
-        _cache["SPY"]["ts"] = time.time()
-    return df
+        _cache["SPY"] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
+    return df_d
 
 
 def get_spy_regime() -> dict:
     df = _get_spy_daily()
     if df is None or len(df) < 50:
         return {"regime": "NEUTRAL", "spy_price": 0.0, "spy_50sma": 0.0}
-    sma50 = float(df["close"].rolling(50).mean().iloc[-1])
-    price = float(df["close"].iloc[-1])
-    if price > sma50 * 1.005:
-        regime = "BULLISH"
-    elif price < sma50 * 0.995:
-        regime = "BEARISH"
-    else:
-        regime = "NEUTRAL"
+    sma50  = float(df["close"].rolling(50).mean().iloc[-1])
+    price  = float(df["close"].iloc[-1])
+    if   price > sma50 * 1.005: regime = "BULLISH"
+    elif price < sma50 * 0.995: regime = "BEARISH"
+    else:                        regime = "NEUTRAL"
     return {"regime": regime, "spy_price": round(price, 2), "spy_50sma": round(sma50, 2)}
 
 
@@ -238,44 +277,13 @@ def get_relative_strength(symbol: str) -> float:
     return round(float(sym_ret - spy_ret), 2)
 
 
-# ── Earnings cache ────────────────────────────────────────────────────────
+# ── Earnings (disabled — conserves API quota) ─────────────────────────────
 
 def get_earnings_flag(symbol: str) -> bool:
-    return _earnings_cache.get(symbol, False)
-
-
-def _check_earnings(symbol: str) -> bool:
-    try:
-        t = yf.Ticker(symbol)
-        cal = t.calendar
-        if cal is None:
-            return False
-        today = datetime.now().date()
-        dates: list = []
-        if isinstance(cal, pd.DataFrame):
-            if "Earnings Date" in cal.index:
-                row = cal.loc["Earnings Date"]
-                dates = list(row.values) if hasattr(row, "values") else [row]
-        elif isinstance(cal, dict):
-            val = cal.get("Earnings Date", [])
-            dates = list(val) if hasattr(val, "__iter__") and not isinstance(val, str) else [val]
-        for d in dates:
-            try:
-                if 0 <= (pd.Timestamp(d).date() - today).days <= 4:
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # Disabled: each check would cost 1 API request (60 requests = half the daily budget).
+    # Re-enable by implementing AV EARNINGS_CALENDAR endpoint on a paid plan.
     return False
 
 
 def refresh_earnings_cache(symbols: list[str]) -> None:
-    print(f"  [market_data] earnings refresh start — {len(symbols)} symbols", flush=True)
-    new_cache: dict[str, bool] = {}
-    for sym in symbols:
-        new_cache[sym] = _check_earnings(sym)
-        time.sleep(0.1)
-    _earnings_cache.update(new_cache)
-    flagged = [s for s, v in new_cache.items() if v]
-    print(f"  [market_data] earnings refresh done — upcoming: {flagged or 'none'}", flush=True)
+    print("  [AV] earnings refresh skipped (disabled to conserve API quota)", flush=True)
