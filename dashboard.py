@@ -265,68 +265,124 @@ def api_ohlc(symbol):
         return jsonify([])
 
 
+def _ingest_article(a: dict, articles: list) -> None:
+    """Parse one NewsAPI article dict and append to articles if valid and non-duplicate."""
+    title = (a.get("title") or "").strip()
+    if not title or title == "[Removed]":
+        return
+    if any(x["title"] == title for x in articles):
+        return
+    text = title + " " + (a.get("description") or "")
+    syms = [s for s, kws in _SYM_KEYWORDS.items()
+            if any(k.lower() in text.lower() for k in kws)]
+    articles.append({
+        "id":          len(articles),
+        "title":       title,
+        "source":      (a.get("source") or {}).get("name", ""),
+        "url":         a.get("url", "#"),
+        "publishedAt": a.get("publishedAt", ""),
+        "symbols":     syms,
+        "sentiment":   "NEUTRAL",
+    })
+
+
 @app.route("/api/news")
 def api_news():
     global _news_cache, _news_cache_ts
     now = _time.time()
     if _news_cache and now - _news_cache_ts < _NEWS_TTL:
+        print(f"[NEWS] Cache hit — {len(_news_cache.get('articles', []))} articles", flush=True)
         return jsonify(_news_cache)
 
     news_key      = os.getenv("NEWS_API_KEY", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     articles: list[dict] = []
 
-    if news_key:
-        try:
-            # Broad market + individual top movers
-            for q, page in [("stock market earnings nasdaq", 20), ("", 15)]:
-                params: dict = {
-                    "language": "en", "sortBy": "publishedAt",
-                    "pageSize": page, "apiKey": news_key,
-                }
-                if q:
-                    params["q"] = q
-                    url = "https://newsapi.org/v2/everything"
-                else:
-                    params["category"] = "business"
-                    url = "https://newsapi.org/v2/top-headlines"
-                r = _http.get(url, params=params, timeout=8)
-                data = r.json() if r.ok else {}
-                for a in data.get("articles", []):
-                    title = (a.get("title") or "").strip()
-                    if not title or title == "[Removed]":
-                        continue
-                    if any(x["title"] == title for x in articles):
-                        continue
-                    text = title + " " + (a.get("description") or "")
-                    syms = [s for s, kws in _SYM_KEYWORDS.items()
-                            if any(k.lower() in text.lower() for k in kws)]
-                    articles.append({
-                        "id":          len(articles),
-                        "title":       title,
-                        "source":      (a.get("source") or {}).get("name", ""),
-                        "url":         a.get("url", "#"),
-                        "publishedAt": a.get("publishedAt", ""),
-                        "symbols":     syms,
-                        "sentiment":   "NEUTRAL",
-                    })
-                    if len(articles) >= 30:
-                        break
-                if len(articles) >= 30:
-                    break
-        except Exception as e:
-            print(f"[NEWS] NewsAPI error: {e}", flush=True)
+    print(f"[NEWS] NEWS_API_KEY present={bool(news_key)}  ANTHROPIC_KEY present={bool(anthropic_key)}", flush=True)
 
-    # Sentiment scoring via Anthropic
+    if not news_key:
+        print("[NEWS] NEWS_API_KEY not set — returning empty feed. Set it in Railway env vars.", flush=True)
+        result = {"articles": [], "per_symbol": {s: "NEUTRAL" for s in config.SYMBOLS}}
+        _news_cache = result
+        _news_cache_ts = now
+        return jsonify(result)
+
+    # ── Fetch 1: top-headlines from finance/news sources ──────────────────
+    try:
+        r1 = _http.get(
+            "https://newsapi.org/v2/top-headlines",
+            params={
+                "sources":  "bbc-news,bloomberg,financial-post,the-wall-street-journal",
+                "apiKey":   news_key,
+                "pageSize": 20,
+                "language": "en",
+            },
+            timeout=8,
+        )
+        data1 = r1.json()
+        print(
+            f"[NEWS] top-headlines status={r1.status_code} "
+            f"raw={len(data1.get('articles', []))} "
+            f"msg={data1.get('message', 'ok')}",
+            flush=True,
+        )
+        if not r1.ok:
+            print(f"[NEWS] top-headlines error body: {data1}", flush=True)
+        for a in data1.get("articles", []):
+            _ingest_article(a, articles)
+    except Exception as exc:
+        print(f"[NEWS] top-headlines exception: {exc}", flush=True)
+
+    # ── Fetch 2: everything with per-stock OR query ───────────────────────
+    try:
+        # Build "NVDA OR Nvidia OR AAPL OR Apple OR ..." query from keyword map
+        parts: list[str] = [" OR ".join(kws[:2]) for kws in _SYM_KEYWORDS.values()]
+        stock_query = " OR ".join(parts[:14])   # cap at 14 symbols to stay under URL limits
+        print(f"[NEWS] everything query (first 120 chars): {stock_query[:120]}", flush=True)
+        r2 = _http.get(
+            "https://newsapi.org/v2/everything",
+            params={
+                "q":        stock_query,
+                "sortBy":   "publishedAt",
+                "language": "en",
+                "pageSize": 20,
+                "apiKey":   news_key,
+            },
+            timeout=8,
+        )
+        data2 = r2.json()
+        print(
+            f"[NEWS] everything status={r2.status_code} "
+            f"raw={len(data2.get('articles', []))} "
+            f"msg={data2.get('message', 'ok')}",
+            flush=True,
+        )
+        if not r2.ok:
+            print(f"[NEWS] everything error body: {data2}", flush=True)
+        for a in data2.get("articles", []):
+            _ingest_article(a, articles)
+    except Exception as exc:
+        print(f"[NEWS] everything exception: {exc}", flush=True)
+
+    # Sort by publishedAt descending, keep 10 most recent
+    articles.sort(key=lambda x: x.get("publishedAt", ""), reverse=True)
+    articles = articles[:10]
+    for i, a in enumerate(articles):
+        a["id"] = i  # re-sequence IDs after sort
+
+    print(f"[NEWS] Articles after merge+dedup+sort: {len(articles)}", flush=True)
+    for a in articles:
+        print(f"  [{a['publishedAt'][:10]}] {a['source']}: {a['title'][:70]}", flush=True)
+
+    # ── Sentiment scoring via Anthropic ───────────────────────────────────
     if anthropic_key and articles:
         try:
             import anthropic as _ant
             client = _ant.Anthropic(api_key=anthropic_key)
-            batch = articles[:20]
-            txt   = "\n".join(f"{a['id']}. {a['title']}" for a in batch)
-            resp  = client.messages.create(
+            txt  = "\n".join(f"{a['id']}. {a['title']}" for a in articles)
+            resp = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=512,
+                max_tokens=256,
                 messages=[{"role": "user", "content": (
                     "Score each headline as BULLISH, BEARISH, or NEUTRAL for stock market sentiment. "
                     "Return ONLY a JSON array: [{\"id\":0,\"sentiment\":\"BULLISH\"},…]\n\n" + txt
@@ -340,20 +396,21 @@ def api_news():
                     sent = item.get("sentiment", "NEUTRAL").upper()
                     if isinstance(idx, int) and 0 <= idx < len(articles) and sent in ("BULLISH", "BEARISH", "NEUTRAL"):
                         articles[idx]["sentiment"] = sent
-        except Exception as e:
-            print(f"[NEWS] Anthropic error: {e}", flush=True)
+            print(f"[NEWS] Anthropic scored {len(articles)} articles", flush=True)
+        except Exception as exc:
+            print(f"[NEWS] Anthropic error: {exc}", flush=True)
 
-    # Aggregate per-symbol
+    # ── Aggregate per-symbol sentiment ────────────────────────────────────
     per_symbol: dict[str, str] = {s: "NEUTRAL" for s in config.SYMBOLS}
     for sym in config.SYMBOLS:
-        sa = [a for a in articles if sym in a["symbols"]]
+        sa = [a for a in articles if sym in a.get("symbols", [])]
         if sa:
             counts = {"BULLISH": 0, "BEARISH": 0, "NEUTRAL": 0}
             for a in sa:
-                counts[a["sentiment"]] += 1
+                counts[a.get("sentiment", "NEUTRAL")] += 1
             per_symbol[sym] = max(counts, key=counts.get)
 
-    result = {"articles": articles[:20], "per_symbol": per_symbol}
+    result = {"articles": articles, "per_symbol": per_symbol}
     _news_cache    = result
     _news_cache_ts = now
     return jsonify(result)
