@@ -35,7 +35,13 @@ def main():
     # 1. Database
     print("[1/4] Initialising database…")
     db.init_db()
-    print("  OK  trades.db ready")
+    db_type = "PostgreSQL" if db.USE_PG else f"SQLite ({config.DB_PATH})"
+    print(f"  DB type  : {db_type}", flush=True)
+    try:
+        n = db.count_trades()
+        print(f"  Trades in DB: {n}", flush=True)
+    except Exception as exc:
+        print(f"  WARNING — could not count trades: {exc}", flush=True)
 
     # 2. Trader + Scanner
     print("[2/4] Creating trader and scanner…")

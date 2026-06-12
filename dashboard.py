@@ -77,8 +77,10 @@ def api_positions():
 @app.route("/api/trades")
 def api_trades():
     try:
-        return jsonify(db.get_recent_trades(100))
-    except Exception:
+        trades = db.get_recent_trades(50)
+        return jsonify(trades)
+    except Exception as exc:
+        print(f"[TRADES] DB query failed: {exc}", flush=True)
         return jsonify([])
 
 

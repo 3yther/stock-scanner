@@ -1271,7 +1271,7 @@ function renderTrades(trades) {
   const body = document.getElementById('trades-body');
   if (!trades.length) { body.innerHTML='<div class="empty-state">No trades yet</div>'; return; }
   const bMap = {BUY:'badge-buy','TAKE PROFIT':'badge-top','TIME EXIT':'badge-neu'};
-  body.innerHTML = trades.slice(0,20).map(t => {
+  body.innerHTML = trades.slice(0,50).map(t => {
     const pnl = parseFloat(t.pnl||0);
     let bc = bMap[t.action] || (t.action.includes('TRAIL')||t.action.includes('BREAK')?'badge-sell':'badge-sell');
     return `<div class="trade-row">
@@ -1633,7 +1633,7 @@ refreshNews();
 
 setInterval(refreshStatus,   10000);
 setInterval(refreshScanner,  30000);
-setInterval(refreshTrades,   15000);
+setInterval(refreshTrades,   30000);
 setInterval(refreshSparklines, 300000);
 setInterval(refreshStats,    120000);
 setInterval(refreshNews,     300000);

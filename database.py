@@ -145,6 +145,19 @@ def get_recent_trades(limit: int = 100) -> list[dict]:
             ).fetchall()]
 
 
+def count_trades() -> int:
+    """Return total number of rows in the trades table."""
+    with _conn() as conn:
+        if USE_PG:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM trades")
+            n = cur.fetchone()[0]
+            cur.close()
+            return int(n)
+        else:
+            return conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+
+
 def get_all_trades(limit: int = 2000) -> list[dict]:
     """For stats page — larger limit, chronological order."""
     with _conn() as conn:
