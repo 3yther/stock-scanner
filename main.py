@@ -35,15 +35,19 @@ def main():
     # 1. Database
     print("[1/4] Initialising database…", flush=True)
     db.init_db()
-    print(f"  Location : {db.db_location()}", flush=True)
-    # Smoke test — if this count is 0 and emails confirm trades fired, the DB is wrong
+    print(f"  [MAIN DB] backend={'postgresql' if db.USE_PG else 'sqlite'}  location={db.db_location()}  module_id={id(db)}", flush=True)
+    # Smoke test — compare module_id here vs [TRADER DB] and [DB INIT] in logs;
+    # all three must be identical to confirm they share the same connection.
     try:
         n = db.count_trades()
-        print(f"  *** SMOKE TEST: trades in DB = {n} ***", flush=True)
+        print(f"  [SMOKE TEST] trades in DB = {n}", flush=True)
         if n == 0:
-            print("  *** WARNING: 0 trades found. If emails confirm trades fired, check DATABASE_URL. ***", flush=True)
+            print("  [SMOKE TEST] WARNING: 0 trades. If emails confirm trades fired, DATABASE_URL may not be set — trades are going to ephemeral SQLite and vanishing on restart.", flush=True)
+        recent = db.get_recent_trades(3)
+        for t in recent:
+            print(f"  [SMOKE TEST] recent: {t.get('timestamp','')} {t.get('action','')} {t.get('symbol','')} pnl={t.get('pnl',0):.2f}", flush=True)
     except Exception as exc:
-        print(f"  *** SMOKE TEST FAILED: {exc} ***", flush=True)
+        print(f"  [SMOKE TEST] FAILED: {exc}", flush=True)
 
     # 2. Trader + Scanner
     print("[2/4] Creating trader and scanner…")

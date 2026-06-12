@@ -85,6 +85,30 @@ def api_trades():
         return jsonify([])
 
 
+@app.route("/api/debug_db")
+def api_debug_db():
+    """Diagnostic endpoint — hit in browser to confirm which DB is in use."""
+    try:
+        total        = db.count_trades()
+        recent       = db.get_recent_trades(10)
+        latest_ts    = recent[0]["timestamp"] if recent else None
+        result = {
+            "backend":               "postgresql" if db.USE_PG else "sqlite",
+            "location":              db.db_location(),
+            "db_module_id":          id(db),
+            "trade_count":           total,
+            "latest_trade_timestamp": latest_ts,
+            "recent_trades":         recent,
+        }
+        print(f"[DEBUG_DB] {result['backend']} | {result['location']} | trades={total}", flush=True)
+        return jsonify(result)
+    except Exception as exc:
+        err = {"error": str(exc), "backend": "postgresql" if db.USE_PG else "sqlite",
+               "location": db.db_location()}
+        print(f"[DEBUG_DB] ERROR: {exc}", flush=True)
+        return jsonify(err), 500
+
+
 @app.route("/api/kill-switch", methods=["GET", "POST"])
 def api_kill_switch():
     if request.method == "POST":

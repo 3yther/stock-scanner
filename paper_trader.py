@@ -19,6 +19,14 @@ import database as db
 import market_data
 import notifier
 
+# Printed at import time — confirms which DB the trader module sees
+print(
+    f"[TRADER DB] backend={'postgresql' if db.USE_PG else 'sqlite'}"
+    f"  location={db.db_location()}"
+    f"  module_id={id(db)}",
+    flush=True,
+)
+
 
 class StockPaperTrader:
     def __init__(self):
@@ -182,10 +190,10 @@ class StockPaperTrader:
         }
         self._trades.append(trade)
         try:
-            print(f"  [DB] Writing BUY trade to {db.db_location()}", flush=True)
+            print(f"[TRADE WRITE] BUY {symbol} @ {price} -> DB={db.db_location()}", flush=True)
             db.log_trade(trade)
         except Exception as _dbe:
-            print(f"  [DB] ERROR writing BUY trade: {_dbe}", flush=True)
+            print(f"[TRADE WRITE] ERROR BUY {symbol}: {_dbe}", flush=True)
         notifier.trade_alert("BUY", symbol, price, shares, 0.0, self.balance, sl, tp)
         regime_tag = f" [BEAR×{config.BEAR_POSITION_SCALE}]" if regime == "BEARISH" else ""
         print(
@@ -214,10 +222,10 @@ class StockPaperTrader:
         }
         self._trades.append(trade)
         try:
-            print(f"  [DB] Writing {action} trade to {db.db_location()}", flush=True)
+            print(f"[TRADE WRITE] {action} {symbol} @ {price} -> DB={db.db_location()}", flush=True)
             db.log_trade(trade)
         except Exception as _dbe:
-            print(f"  [DB] ERROR writing {action} trade: {_dbe}", flush=True)
+            print(f"[TRADE WRITE] ERROR {action} {symbol}: {_dbe}", flush=True)
         notifier.trade_alert(action, symbol, price, pos["shares"], pnl, self.balance)
 
         label = f"[{action:<16}]"

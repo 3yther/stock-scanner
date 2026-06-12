@@ -116,8 +116,14 @@ def db_location() -> str:
     return f"SQLite  {os.path.abspath(config.DB_PATH)}"
 
 
-# Print once at import time so it appears in every Railway startup log
-print(f"[DB] Using {db_location()}", flush=True)
+# ── Startup banner — printed once when the module is first imported ────────
+# module id() lets us confirm paper_trader and dashboard share the SAME object
+print(
+    f"[DB INIT] backend={'postgresql' if USE_PG else 'sqlite'}"
+    f"  location={db_location()}"
+    f"  module_id={id(__import__('database'))}",
+    flush=True,
+)
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
