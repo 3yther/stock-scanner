@@ -181,7 +181,11 @@ class StockPaperTrader:
             "balance":   self.balance,
         }
         self._trades.append(trade)
-        db.log_trade(trade)
+        try:
+            print(f"  [DB] Writing BUY trade to {db.db_location()}", flush=True)
+            db.log_trade(trade)
+        except Exception as _dbe:
+            print(f"  [DB] ERROR writing BUY trade: {_dbe}", flush=True)
         notifier.trade_alert("BUY", symbol, price, shares, 0.0, self.balance, sl, tp)
         regime_tag = f" [BEAR×{config.BEAR_POSITION_SCALE}]" if regime == "BEARISH" else ""
         print(
@@ -209,7 +213,11 @@ class StockPaperTrader:
             "balance":   self.balance,
         }
         self._trades.append(trade)
-        db.log_trade(trade)
+        try:
+            print(f"  [DB] Writing {action} trade to {db.db_location()}", flush=True)
+            db.log_trade(trade)
+        except Exception as _dbe:
+            print(f"  [DB] ERROR writing {action} trade: {_dbe}", flush=True)
         notifier.trade_alert(action, symbol, price, pos["shares"], pnl, self.balance)
 
         label = f"[{action:<16}]"

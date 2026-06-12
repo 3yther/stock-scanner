@@ -33,15 +33,17 @@ def main():
     print(f"\n  Symbols: {', '.join(config.SYMBOLS)}\n")
 
     # 1. Database
-    print("[1/4] Initialising database…")
+    print("[1/4] Initialising database…", flush=True)
     db.init_db()
-    db_type = "PostgreSQL" if db.USE_PG else f"SQLite ({config.DB_PATH})"
-    print(f"  DB type  : {db_type}", flush=True)
+    print(f"  Location : {db.db_location()}", flush=True)
+    # Smoke test — if this count is 0 and emails confirm trades fired, the DB is wrong
     try:
         n = db.count_trades()
-        print(f"  Trades in DB: {n}", flush=True)
+        print(f"  *** SMOKE TEST: trades in DB = {n} ***", flush=True)
+        if n == 0:
+            print("  *** WARNING: 0 trades found. If emails confirm trades fired, check DATABASE_URL. ***", flush=True)
     except Exception as exc:
-        print(f"  WARNING — could not count trades: {exc}", flush=True)
+        print(f"  *** SMOKE TEST FAILED: {exc} ***", flush=True)
 
     # 2. Trader + Scanner
     print("[2/4] Creating trader and scanner…")

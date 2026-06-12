@@ -106,6 +106,20 @@ def init_db():
 init_db()
 
 
+# ── Location helper ───────────────────────────────────────────────────────
+
+def db_location() -> str:
+    """Human-readable description of the active database — safe to print."""
+    if USE_PG:
+        preview = _DB_URL[:30] + ("…" if len(_DB_URL) > 30 else "")
+        return f"PostgreSQL  {preview}"
+    return f"SQLite  {os.path.abspath(config.DB_PATH)}"
+
+
+# Print once at import time so it appears in every Railway startup log
+print(f"[DB] Using {db_location()}", flush=True)
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 def log_trade(trade: dict[str, Any]):

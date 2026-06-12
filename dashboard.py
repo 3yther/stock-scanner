@@ -78,9 +78,10 @@ def api_positions():
 def api_trades():
     try:
         trades = db.get_recent_trades(50)
+        print(f"[TRADES] Reading from {db.db_location()} — returned {len(trades)} rows", flush=True)
         return jsonify(trades)
     except Exception as exc:
-        print(f"[TRADES] DB query failed: {exc}", flush=True)
+        print(f"[TRADES] DB query failed ({db.db_location()}): {exc}", flush=True)
         return jsonify([])
 
 
@@ -106,6 +107,7 @@ def api_stats():
     try:
         all_trades = db.get_all_trades(2000)
         snapshots  = db.get_equity_snapshots()
+        print(f"[STATS] Reading from {db.db_location()} — {len(all_trades)} trades, {len(snapshots)} snapshots", flush=True)
     except Exception:
         return jsonify({"error": "db unavailable"}), 503
 
