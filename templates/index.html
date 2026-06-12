@@ -28,9 +28,9 @@ html { color-scheme: dark; }
 body {
   background: var(--bg);
   background-image:
-    linear-gradient(rgba(6,182,212,.014) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(6,182,212,.014) 1px, transparent 1px);
-  background-size: 48px 48px;
+    linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
+  background-size: 40px 40px;
   color: var(--text);
   font-family: 'Inter', sans-serif;
   font-size: 13px;
@@ -50,9 +50,9 @@ body::before {
 /* ── Scanlines ─────────────────────────────────────────────────────────── */
 .scanline-overlay {
   position: fixed; inset: 0; pointer-events: none; z-index: 9998;
-  background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.03) 1px,rgba(0,0,0,.03) 2px);
+  background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.04) 1px,rgba(0,0,0,.04) 2px);
 }
-.pc { position: fixed; width: 22px; height: 22px; z-index: 9999; pointer-events: none; }
+.pc { position: fixed; width: 22px; height: 22px; z-index: 9999; pointer-events: none; animation: pc-pulse 3s ease-in-out infinite; }
 .pc-tl { top:8px;left:8px; border-top:1.5px solid var(--cyan); border-left:1.5px solid var(--cyan); }
 .pc-tr { top:8px;right:8px; border-top:1.5px solid var(--cyan); border-right:1.5px solid var(--cyan); }
 .pc-bl { bottom:8px;left:8px; border-bottom:1.5px solid var(--purple); border-left:1.5px solid var(--purple); }
@@ -67,6 +67,13 @@ body::before {
 @keyframes slide-in    { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
 @keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
 @keyframes scan-line   { from{top:-60px} to{top:100%} }
+@keyframes pc-pulse    { 0%,100%{opacity:.45} 50%{opacity:1} }
+@keyframes card-enter  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+@keyframes price-glow-g{ 0%,100%{text-shadow:none} 50%{text-shadow:0 0 10px rgba(63,185,80,.9),0 0 20px rgba(63,185,80,.45)} }
+@keyframes price-glow-r{ 0%,100%{text-shadow:none} 50%{text-shadow:0 0 10px rgba(248,81,73,.9),0 0 20px rgba(248,81,73,.45)} }
+@keyframes mkt-breathe { 0%,100%{text-shadow:0 0 6px rgba(63,185,80,.4)} 50%{text-shadow:0 0 18px rgba(63,185,80,.95),0 0 30px rgba(63,185,80,.45)} }
+@keyframes spark-draw  { from{stroke-dashoffset:200} to{stroke-dashoffset:0} }
+@keyframes row-sweep   { 0%{background-position:-200% center} 100%{background-position:300% center} }
 
 /* ── Header ────────────────────────────────────────────────────────────── */
 header {
@@ -96,7 +103,7 @@ header {
   letter-spacing: 2.5px; padding: 4px 12px; border-radius: 2px;
   border: 1px solid; white-space: nowrap;
 }
-.mkt-open   { color: var(--green); border-color: rgba(63,185,80,.5); background: rgba(63,185,80,.08); text-shadow:0 0 10px rgba(63,185,80,.7); }
+.mkt-open   { color: var(--green); border-color: rgba(63,185,80,.5); background: rgba(63,185,80,.08); animation: mkt-breathe 2.5s ease-in-out infinite; }
 .mkt-closed { color: var(--muted); border-color: rgba(74,85,104,.4); background: rgba(74,85,104,.06); }
 .mkt-cd     { font-family: var(--mono); font-size: .65rem; color: var(--muted); letter-spacing: 1px; }
 .scan-status {
@@ -176,8 +183,8 @@ header {
 }
 .tick-sym { font-weight: 600; color: var(--text); }
 .tick-price { color: var(--muted); }
-.tick-up   { color: var(--green); }
-.tick-down { color: var(--red); }
+.tick-up   { color: var(--green); text-shadow: 0 0 8px rgba(63,185,80,.65); }
+.tick-down { color: var(--red);   text-shadow: 0 0 8px rgba(248,81,73,.65); }
 .tick-flat { color: var(--muted); }
 
 /* ── Command Centre Layout ─────────────────────────────────────────────── */
@@ -275,7 +282,11 @@ header {
 }
 .watchlist-table td:nth-child(-n+3) { text-align: left; }
 .watchlist-table tr { cursor: pointer; }
-.watchlist-table tr:hover td { background: rgba(6,182,212,.04); }
+.watchlist-table tr:hover td {
+  background: linear-gradient(90deg, transparent, rgba(6,182,212,.07), transparent) no-repeat center;
+  background-size: 200% 100%;
+  animation: row-sweep .6s ease forwards;
+}
 .watchlist-table tr:last-child td { border-bottom: none; }
 tr.flash-g td { animation: flash-green .6s ease; }
 tr.flash-r td { animation: flash-red   .6s ease; }
@@ -497,9 +508,47 @@ tr.flash-r td { animation: flash-red   .6s ease; }
   .mnav-btn.active { border-color: var(--cyan); color: var(--cyan); background: rgba(6,182,212,.08); }
   body { padding-bottom: 56px; }
 }
+
+/* ── Boot Overlay ──────────────────────────────────────────────────────── */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  background: #000408;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  cursor: pointer; transition: opacity .5s;
+}
+#boot-text {
+  font-family: var(--mono); font-size: .9rem; color: var(--cyan);
+  letter-spacing: 2px; line-height: 2.2; text-align: center;
+  white-space: pre; text-shadow: 0 0 20px rgba(6,182,212,.6);
+}
+#boot-cursor {
+  display: inline-block; width: 8px; height: 1em; background: var(--cyan);
+  margin-left: 3px; vertical-align: middle;
+  animation: pulse-dot .55s step-end infinite;
+}
+#boot-hint {
+  position: absolute; bottom: 36px;
+  font-family: var(--mono); font-size: .52rem; color: var(--muted); letter-spacing: 3px;
+}
+
+/* ── Particle Canvas ───────────────────────────────────────────────────── */
+#particles { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+
+/* ── Price Glow ────────────────────────────────────────────────────────── */
+.price-glow-g { animation: price-glow-g .85s ease; }
+.price-glow-r { animation: price-glow-r .85s ease; }
 </style>
 </head>
 <body>
+
+<!-- Boot Overlay -->
+<div id="boot-overlay">
+  <div id="boot-text"></div><span id="boot-cursor"></span>
+  <div id="boot-hint">CLICK TO SKIP</div>
+</div>
+
+<!-- Particle field -->
+<canvas id="particles"></canvas>
 
 <!-- Overlays -->
 <div class="scanline-overlay"></div>
@@ -816,7 +865,7 @@ function updateKillBtn() {
 }
 
 /* ── Sparkline SVG ─────────────────────────────────────────────────────── */
-function svgSparkline(prices, signal, w=84, h=26) {
+function svgSparkline(prices, signal, w=84, h=26, idx=0) {
   if (!prices || prices.length < 2) return `<svg width="${w}" height="${h}"></svg>`;
   const min = Math.min(...prices), max = Math.max(...prices);
   const rng = max - min || 1;
@@ -826,12 +875,13 @@ function svgSparkline(prices, signal, w=84, h=26) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const col = signal === 1 ? '#3FB950' : signal === -1 ? '#F85149' : '#06B6D4';
+  const delay = (idx * 0.07).toFixed(2);
   return `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
     <defs><linearGradient id="sg${signal+1}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="${col}" stop-opacity="0.2"/>
       <stop offset="100%" stop-color="${col}" stop-opacity="0"/>
     </linearGradient></defs>
-    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="stroke-dasharray:200;stroke-dashoffset:200;animation:spark-draw 1s ease ${delay}s forwards"/>
   </svg>`;
 }
 
@@ -1106,7 +1156,7 @@ function renderWatchlist(results, newsSentiment={}) {
     const sCol  = score>=65?'#3FB950':score>=45?'#F59E0B':'#4A5568';
 
     const spark = S.sparklines[r.symbol] || [];
-    const sparkSVG = svgSparkline(spark, r.signal);
+    const sparkSVG = svgSparkline(spark, r.signal, 84, 26, i);
 
     const newsS = newsSentiment[r.symbol] || 'NEUTRAL';
     const newsDot = newsS==='BULLISH'?'<span class="sentiment-dot dot-bull"></span>':
@@ -1162,9 +1212,18 @@ function renderWatchlist(results, newsSentiment={}) {
     // Price flash on change
     const prev = S.prevPrices[r.symbol];
     if (prev !== undefined && r.price !== prev && !r.no_data) {
+      const isUp = r.price > prev;
       tr.classList.remove('flash-g','flash-r');
       void tr.offsetWidth;
-      tr.classList.add(r.price > prev ? 'flash-g' : 'flash-r');
+      tr.classList.add(isUp ? 'flash-g' : 'flash-r');
+      // Price cell text-shadow glow
+      const priceTd = document.getElementById(`price-${r.symbol}`);
+      if (priceTd) {
+        priceTd.classList.remove('price-glow-g','price-glow-r');
+        void priceTd.offsetWidth;
+        priceTd.classList.add(isUp ? 'price-glow-g' : 'price-glow-r');
+        setTimeout(() => priceTd.classList.remove('price-glow-g','price-glow-r'), 900);
+      }
       sndTick();
       setTimeout(() => tr.classList.remove('flash-g','flash-r'), 700);
     }
@@ -1284,14 +1343,14 @@ async function refreshStatus() {
     const pnl  = parseFloat(s.total_pnl||0);
     const dPnl = parseFloat(s.daily_pnl||0);
 
-    document.getElementById('equity-display').textContent = money(s.equity);
-    document.getElementById('s-equity').textContent       = money(s.equity);
+    countUp(document.getElementById('equity-display'), parseFloat(s.equity||0), {format: money});
+    countUp(document.getElementById('s-equity'),       parseFloat(s.equity||0), {format: money});
     document.getElementById('s-equity-sub').textContent   = 'Start '+money(s.initial_balance);
     document.getElementById('s-pnl').textContent          = (pnl>=0?'+':'')+money(Math.abs(pnl));
     document.getElementById('s-pnl').className            = 'stat-val '+(pnl>=0?'pos':'neg');
     document.getElementById('s-pnl-pct').textContent      = pct(s.total_pnl_pct);
-    document.getElementById('s-cash').textContent         = money(s.balance);
-    document.getElementById('s-winrate').textContent      = parseFloat(s.win_rate||0).toFixed(1)+'%';
+    countUp(document.getElementById('s-cash'), parseFloat(s.balance||0), {format: money});
+    countUp(document.getElementById('s-winrate'), parseFloat(s.win_rate||0), {format: v => v.toFixed(1)+'%'});
     document.getElementById('s-trades').textContent       = (s.total_trades||0)+' closed';
     document.getElementById('s-daily').textContent        = (dPnl>=0?'+':'')+money(Math.abs(dPnl));
     document.getElementById('s-daily').className          = 'stat-val '+(dPnl>=0?'pos':'neg');
@@ -1479,6 +1538,89 @@ function mTab(tab, btn) {
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+/* ── Number Ticker ───────────────────────────────────────────────────────── */
+function countUp(el, to, {format=null, duration=500}={}) {
+  if (!el) return;
+  const stored = el.dataset.countVal;
+  const from = stored !== undefined ? parseFloat(stored) : to;
+  el.dataset.countVal = to;
+  if (isNaN(from) || from === to) { el.textContent = format ? format(to) : to.toFixed(2); return; }
+  const start = performance.now(), diff = to - from;
+  (function step(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const v = from + diff * (1 - Math.pow(1 - t, 3));
+    el.textContent = format ? format(v) : v.toFixed(2);
+    if (t < 1) requestAnimationFrame(step);
+  })(start);
+}
+
+/* ── Particle Field ──────────────────────────────────────────────────────── */
+(function initParticles() {
+  const canvas = document.getElementById('particles');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  let W = canvas.width = window.innerWidth;
+  let H = canvas.height = window.innerHeight;
+  window.addEventListener('resize', () => {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  });
+  const dots = Array.from({length: 40}, () => ({
+    x: Math.random() * window.innerWidth,
+    y: Math.random() * window.innerHeight,
+    r: Math.random() * 1.2 + 0.4,
+    vx: (Math.random() - .5) * .22,
+    vy: (Math.random() - .5) * .22,
+    o: Math.random() * 0.10 + 0.04,
+  }));
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+    dots.forEach(d => {
+      d.x += d.vx; d.y += d.vy;
+      if (d.x < 0) d.x = W; else if (d.x > W) d.x = 0;
+      if (d.y < 0) d.y = H; else if (d.y > H) d.y = 0;
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(6,182,212,${d.o})`; ctx.fill();
+    });
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+
+/* ── Boot Sequence & Card Entrance ───────────────────────────────────────── */
+(function bootSequence() {
+  const overlay = document.getElementById('boot-overlay');
+  if (!overlay) return;
+
+  // Pre-hide cards for entrance animation
+  const cards = Array.from(document.querySelectorAll('.stat-card, .panel-card, .daily-pnl-strip, .equity-section'));
+  cards.forEach(el => { el.style.opacity = '0'; });
+
+  function triggerCardEnter() {
+    cards.forEach((el, idx) => {
+      el.style.opacity = '';
+      el.style.animation = `card-enter .45s ease ${(idx * 0.055).toFixed(3)}s both`;
+    });
+  }
+
+  const lines = ['SIGNAL SCANNER v2.1', 'INITIALISING SYSTEMS...', 'MARKET DATA: CONNECTED', 'COMMAND CENTRE: LOADING...'];
+  const full = lines.join('\n');
+  let i = 0;
+  const textEl = document.getElementById('boot-text');
+
+  const dismiss = () => {
+    overlay.style.opacity = '0';
+    setTimeout(() => { overlay.style.display = 'none'; triggerCardEnter(); }, 500);
+  };
+  overlay.addEventListener('click', dismiss);
+
+  const iv = setInterval(() => {
+    i++;
+    if (textEl) textEl.textContent = full.slice(0, i);
+    if (i >= full.length) { clearInterval(iv); setTimeout(dismiss, 700); }
+  }, 24);
+})();
 
 /* ── Bootstrap ───────────────────────────────────────────────────────────── */
 loadKill();
