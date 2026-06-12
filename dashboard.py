@@ -1,10 +1,15 @@
+import json
+import os
 import time as _time
 import threading
+from datetime import datetime, timezone, timedelta
 
+import requests as _http
 from flask import Flask, jsonify, render_template, request
 
 import config
 import database as db
+import market_data
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -158,6 +163,199 @@ def api_stats():
 
     _stats_cache    = result
     _stats_cache_ts = now
+    return jsonify(result)
+
+
+# ── News cache ─────────────────────────────────────────────────────────────
+_news_cache: dict | None = None
+_news_cache_ts: float    = 0.0
+_NEWS_TTL = 300.0  # 5 minutes
+
+# Keyword map for symbol detection in headlines
+_SYM_KEYWORDS: dict[str, list[str]] = {
+    "AAPL":  ["Apple", "iPhone", "AAPL"],
+    "MSFT":  ["Microsoft", "Azure", "MSFT"],
+    "GOOGL": ["Google", "Alphabet", "GOOGL"],
+    "AMZN":  ["Amazon", "AWS", "AMZN"],
+    "NVDA":  ["Nvidia", "NVDA", "GPU"],
+    "META":  ["Meta", "Facebook", "Instagram", "META"],
+    "TSLA":  ["Tesla", "TSLA", "Elon Musk"],
+    "JPM":   ["JPMorgan", "JPM", "Jamie Dimon"],
+    "JNJ":   ["Johnson & Johnson", "J&J", "JNJ"],
+    "V":     ["Visa"],
+    "PG":    ["Procter", "Gamble", "P&G"],
+    "UNH":   ["UnitedHealth", "UNH"],
+    "HD":    ["Home Depot", "HD"],
+    "MA":    ["Mastercard", "MA"],
+    "BAC":   ["Bank of America", "BAC"],
+    "XOM":   ["Exxon", "ExxonMobil", "XOM"],
+    "PFE":   ["Pfizer", "PFE"],
+    "ABBV":  ["AbbVie", "ABBV"],
+    "COST":  ["Costco", "COST"],
+    "BRK-B": ["Berkshire", "Buffett"],
+    "SPCX":  ["SPCX"],
+    "SPY":   ["S&P 500", "S&P500", "SPY", "index fund"],
+    "QQQ":   ["Nasdaq", "QQQ", "tech index"],
+    "AMD":   ["AMD", "Advanced Micro"],
+}
+
+
+@app.route("/api/market_status")
+def api_market_status():
+    now_utc = datetime.now(timezone.utc)
+    month   = now_utc.month
+    et_off  = timedelta(hours=-4 if 3 <= month <= 11 else -5)
+    et_now  = now_utc + et_off
+    open_t  = et_now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    close_t = et_now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    is_open = et_now.weekday() < 5 and open_t <= et_now <= close_t
+
+    if is_open:
+        delta = close_t - et_now
+        label = "CLOSES IN"
+    else:
+        next_open = open_t
+        if et_now >= close_t or et_now.weekday() >= 5:
+            next_open += timedelta(days=1)
+        while next_open.weekday() >= 5:
+            next_open += timedelta(days=1)
+        delta = next_open - et_now
+        label = "OPENS IN"
+
+    s = int(delta.total_seconds())
+    s = max(s, 0)
+    cd = f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d}"
+    return jsonify({"is_open": is_open, "label": label, "countdown": cd})
+
+
+@app.route("/api/sparklines")
+def api_sparklines():
+    result = {}
+    for sym in config.SYMBOLS:
+        try:
+            df_d, _ = market_data.get_ohlc(sym)
+            if df_d is not None and len(df_d) > 1:
+                result[sym] = [round(float(p), 2) for p in df_d["close"].tail(30)]
+            else:
+                result[sym] = []
+        except Exception:
+            result[sym] = []
+    return jsonify(result)
+
+
+@app.route("/api/ohlc/<symbol>")
+def api_ohlc(symbol):
+    symbol = symbol.upper()
+    try:
+        df_d, _ = market_data.get_ohlc(symbol)
+        if df_d is None or df_d.empty:
+            return jsonify([])
+        rows = []
+        for _, row in df_d.tail(90).iterrows():
+            rows.append({
+                "date":   str(row.get("datetime", ""))[:10],
+                "open":   round(float(row["open"]),   2),
+                "high":   round(float(row["high"]),   2),
+                "low":    round(float(row["low"]),    2),
+                "close":  round(float(row["close"]),  2),
+                "volume": int(row["volume"]),
+            })
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify([])
+
+
+@app.route("/api/news")
+def api_news():
+    global _news_cache, _news_cache_ts
+    now = _time.time()
+    if _news_cache and now - _news_cache_ts < _NEWS_TTL:
+        return jsonify(_news_cache)
+
+    news_key      = os.getenv("NEWS_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    articles: list[dict] = []
+
+    if news_key:
+        try:
+            # Broad market + individual top movers
+            for q, page in [("stock market earnings nasdaq", 20), ("", 15)]:
+                params: dict = {
+                    "language": "en", "sortBy": "publishedAt",
+                    "pageSize": page, "apiKey": news_key,
+                }
+                if q:
+                    params["q"] = q
+                    url = "https://newsapi.org/v2/everything"
+                else:
+                    params["category"] = "business"
+                    url = "https://newsapi.org/v2/top-headlines"
+                r = _http.get(url, params=params, timeout=8)
+                data = r.json() if r.ok else {}
+                for a in data.get("articles", []):
+                    title = (a.get("title") or "").strip()
+                    if not title or title == "[Removed]":
+                        continue
+                    if any(x["title"] == title for x in articles):
+                        continue
+                    text = title + " " + (a.get("description") or "")
+                    syms = [s for s, kws in _SYM_KEYWORDS.items()
+                            if any(k.lower() in text.lower() for k in kws)]
+                    articles.append({
+                        "id":          len(articles),
+                        "title":       title,
+                        "source":      (a.get("source") or {}).get("name", ""),
+                        "url":         a.get("url", "#"),
+                        "publishedAt": a.get("publishedAt", ""),
+                        "symbols":     syms,
+                        "sentiment":   "NEUTRAL",
+                    })
+                    if len(articles) >= 30:
+                        break
+                if len(articles) >= 30:
+                    break
+        except Exception as e:
+            print(f"[NEWS] NewsAPI error: {e}", flush=True)
+
+    # Sentiment scoring via Anthropic
+    if anthropic_key and articles:
+        try:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=anthropic_key)
+            batch = articles[:20]
+            txt   = "\n".join(f"{a['id']}. {a['title']}" for a in batch)
+            resp  = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                messages=[{"role": "user", "content": (
+                    "Score each headline as BULLISH, BEARISH, or NEUTRAL for stock market sentiment. "
+                    "Return ONLY a JSON array: [{\"id\":0,\"sentiment\":\"BULLISH\"},…]\n\n" + txt
+                )}],
+            )
+            raw = resp.content[0].text
+            s, e = raw.find("["), raw.rfind("]") + 1
+            if s >= 0 and e > s:
+                for item in json.loads(raw[s:e]):
+                    idx  = item.get("id")
+                    sent = item.get("sentiment", "NEUTRAL").upper()
+                    if isinstance(idx, int) and 0 <= idx < len(articles) and sent in ("BULLISH", "BEARISH", "NEUTRAL"):
+                        articles[idx]["sentiment"] = sent
+        except Exception as e:
+            print(f"[NEWS] Anthropic error: {e}", flush=True)
+
+    # Aggregate per-symbol
+    per_symbol: dict[str, str] = {s: "NEUTRAL" for s in config.SYMBOLS}
+    for sym in config.SYMBOLS:
+        sa = [a for a in articles if sym in a["symbols"]]
+        if sa:
+            counts = {"BULLISH": 0, "BEARISH": 0, "NEUTRAL": 0}
+            for a in sa:
+                counts[a["sentiment"]] += 1
+            per_symbol[sym] = max(counts, key=counts.get)
+
+    result = {"articles": articles[:20], "per_symbol": per_symbol}
+    _news_cache    = result
+    _news_cache_ts = now
     return jsonify(result)
 
 
