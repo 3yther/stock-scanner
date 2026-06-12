@@ -109,6 +109,12 @@ def api_debug_db():
         return jsonify(err), 500
 
 
+@app.route("/api/poly_status")
+def api_poly_status():
+    """Rate-limiter and cache snapshot for Polygon.io — useful for debugging 429s."""
+    return jsonify(market_data.poly_status())
+
+
 @app.route("/api/kill-switch", methods=["GET", "POST"])
 def api_kill_switch():
     if request.method == "POST":

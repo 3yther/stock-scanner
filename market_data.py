@@ -1,21 +1,21 @@
 """
-market_data.py — Polygon.io backend.
+market_data.py — Polygon.io backend with rate limiting.
 
-Endpoints used:
-  Daily  : /v2/aggs/ticker/{symbol}/range/1/day/{from}/{to}   (last 90 days)
-  Hourly : /v2/aggs/ticker/{symbol}/range/1/hour/{from}/{to}  (last 5 days)
-  Live   : /v2/last/trade/{symbol}
+Polygon free tier: 5 API calls / minute.
+Strategy:
+  - One global lock serialises every Polygon HTTP call.
+  - 12-second sleep after every successful call  → max 5/min.
+  - On 429: back off 60 s and retry up to 3 times.
 
-No rate limiting required on Polygon free tier.
-Cache TTL = 4 hours.
+Cache TTLs (separate per data type):
+  Daily  bars : 4 hours   — daily OHLCV only changes after market close
+  Hourly bars : 30 minutes — intraday momentum needs fresher data
 
-Set POLYGON_API_KEY in your .env file or Railway environment variables.
-
-Note: get_spy_regime uses a 50-day SMA. 30 calendar days ≈ 22 trading days,
-which is insufficient; daily window is set to 90 days (~63 trading days) so
-all indicators (MACD-26, 50-day SMA, 21-day relative-strength) have enough bars.
+Cold-start cost: 25 symbols × 2 calls × ~12 s = ~10 minutes.
+Hot path:  cache hit → no HTTP call → no lock contention → instant.
 """
 
+import collections
 import os
 import threading
 import time
@@ -25,16 +25,31 @@ import pandas as pd
 import requests as _http
 
 # ── Config ────────────────────────────────────────────────────────────────
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-_POLY_BASE      = "https://api.polygon.io"
-_DAILY_DAYS     = 90   # calendar days back for daily bars  (~63 trading days)
-_HOURLY_DAYS    = 5    # calendar days back for hourly bars
-_CACHE_TTL      = 4 * 3600   # 4 hours
-_HTTP_TIMEOUT   = 20         # seconds per request
+POLYGON_API_KEY  = os.getenv("POLYGON_API_KEY", "")
+_POLY_BASE       = "https://api.polygon.io"
+_DAILY_DAYS      = 90       # calendar days back for daily bars (~63 trading days)
+_HOURLY_DAYS     = 5        # calendar days back for hourly bars
+_DAILY_TTL       = 4 * 3600     # 4 hours
+_HOURLY_TTL      = 30 * 60     # 30 minutes
+_HTTP_TIMEOUT    = 20           # seconds per HTTP call
+_INTER_REQ_SLEEP = 12.0         # seconds between requests (keeps us at 5/min)
+_RETRY_WAIT      = 60.0         # seconds to wait after a 429
+_MAX_RETRIES     = 3
+_RATE_LIMIT      = 5            # max calls/minute on free tier
+_RATE_WINDOW     = 60.0         # rolling window for budget display
 
-# ── In-process cache ──────────────────────────────────────────────────────
+# ── Per-symbol cache ──────────────────────────────────────────────────────
+# Structure per symbol:
+#   {"daily": df|None, "daily_ts": float, "hourly": df|None, "hourly_ts": float}
 _cache: dict[str, dict] = {}
 _cache_lock = threading.Lock()
+
+# ── Rate-limiter state ────────────────────────────────────────────────────
+_rl_lock         = threading.Lock()                    # one HTTP call at a time
+_call_times: collections.deque = collections.deque()   # timestamps of recent calls
+_last_call_time: float = 0.0
+_cache_hits:    int    = 0
+_total_requests: int   = 0
 
 
 # ── Date helpers ──────────────────────────────────────────────────────────
@@ -47,25 +62,75 @@ def _days_ago(n: int) -> str:
     return (datetime.utcnow() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
-# ── HTTP helper ───────────────────────────────────────────────────────────
+# ── Core HTTP helper — rate-limited, retried ──────────────────────────────
 
 def _poly_get(path: str) -> dict | None:
-    """GET one Polygon endpoint; returns parsed JSON or None on any error."""
+    """
+    GET one Polygon endpoint.
+    Acquires _rl_lock so only one request runs at a time.
+    Sleeps _INTER_REQ_SLEEP seconds after every successful call.
+    On HTTP 429: sleeps _RETRY_WAIT seconds then retries (up to _MAX_RETRIES).
+    """
+    global _last_call_time, _total_requests
+
     if not POLYGON_API_KEY:
-        print("  [Poly] POLYGON_API_KEY not set — cannot fetch data", flush=True)
+        print("  [Poly] POLYGON_API_KEY not set — cannot fetch", flush=True)
         return None
 
     sep = "&" if "?" in path else "?"
     url = f"{path}{sep}apiKey={POLYGON_API_KEY}"
-    print(f"  [Poly] GET {path}", flush=True)
 
-    try:
-        r = _http.get(url, timeout=_HTTP_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"  [Poly] request error: {e}", flush=True)
-        return None
+    with _rl_lock:
+        # Show rolling budget before the call
+        now = time.time()
+        while _call_times and now - _call_times[0] > _RATE_WINDOW:
+            _call_times.popleft()
+        print(
+            f"  [Poly] rate limit budget: {len(_call_times)}/{_RATE_LIMIT} used this minute",
+            flush=True,
+        )
+
+        for attempt in range(1, _MAX_RETRIES + 1):
+            print(f"  [Poly] GET {path[:90]}", flush=True)
+            try:
+                r = _http.get(url, timeout=_HTTP_TIMEOUT)
+            except Exception as exc:
+                print(f"  [Poly] network error: {exc}", flush=True)
+                return None
+
+            # Record every call (even 429s) for budget tracking
+            now = time.time()
+            _call_times.append(now)
+            _last_call_time = now
+            _total_requests += 1
+
+            if r.status_code == 429:
+                if attempt < _MAX_RETRIES:
+                    print(
+                        f"  [Poly] 429 received — backing off {int(_RETRY_WAIT)}s,"
+                        f" retry {attempt}/{_MAX_RETRIES}",
+                        flush=True,
+                    )
+                    time.sleep(_RETRY_WAIT)
+                    continue
+                print(
+                    f"  [Poly] 429 — max retries ({_MAX_RETRIES}) exhausted, giving up",
+                    flush=True,
+                )
+                return None
+
+            if not r.ok:
+                print(f"  [Poly] HTTP {r.status_code} on {path[:70]}", flush=True)
+                # Still sleep so we don't hammer on errors
+                time.sleep(_INTER_REQ_SLEEP)
+                return None
+
+            data = r.json()
+            # Inter-request sleep while still holding the lock — next call waits
+            time.sleep(_INTER_REQ_SLEEP)
+            return data
+
+    return None
 
 
 # ── Response parser ───────────────────────────────────────────────────────
@@ -76,8 +141,10 @@ def _parse_aggs(data: dict | None, symbol: str, label: str) -> pd.DataFrame | No
         return None
     results = data.get("results")
     if not results:
-        status = data.get("status", "?")
-        print(f"  [Poly] {symbol} {label}: no results (status={status})", flush=True)
+        print(
+            f"  [Poly] {symbol} {label}: no results (status={data.get('status','?')})",
+            flush=True,
+        )
         return None
     rows = []
     for bar in results:
@@ -97,80 +164,140 @@ def _parse_aggs(data: dict | None, symbol: str, label: str) -> pd.DataFrame | No
     return pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
 
 
-# ── Per-symbol fetch ──────────────────────────────────────────────────────
+# ── Per-type fetchers (each costs 1 API call + 12 s sleep) ───────────────
 
-def _fetch_symbol(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Fetch daily + hourly bars for one symbol. Makes 2 API calls."""
-    today   = _today()
-
-    daily_url  = (
+def _fetch_daily(symbol: str) -> pd.DataFrame | None:
+    url = (
         f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/day"
-        f"/{_days_ago(_DAILY_DAYS)}/{today}"
+        f"/{_days_ago(_DAILY_DAYS)}/{_today()}"
     )
-    df_d = _parse_aggs(_poly_get(daily_url), symbol, "daily")
+    df = _parse_aggs(_poly_get(url), symbol, "daily")
+    rows = len(df) if df is not None else 0
+    print(f"  [Poly] {symbol} daily — {rows} rows", flush=True)
+    return df
 
-    hourly_url = (
+
+def _fetch_hourly(symbol: str) -> pd.DataFrame | None:
+    url = (
         f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/hour"
-        f"/{_days_ago(_HOURLY_DAYS)}/{today}"
+        f"/{_days_ago(_HOURLY_DAYS)}/{_today()}"
     )
-    df_h = _parse_aggs(_poly_get(hourly_url), symbol, "hourly")
-
-    d_rows = len(df_d) if df_d is not None else 0
-    h_rows = len(df_h) if df_h is not None else 0
-    print(f"  [Poly] {symbol} fetched — daily={d_rows} rows  hourly={h_rows} rows", flush=True)
-    return df_d, df_h
+    df = _parse_aggs(_poly_get(url), symbol, "hourly")
+    rows = len(df) if df is not None else 0
+    print(f"  [Poly] {symbol} hourly — {rows} rows", flush=True)
+    return df
 
 
 # ── Batch prefetch ────────────────────────────────────────────────────────
 
 def batch_scan_populate(symbols: list[str]) -> None:
     """
-    Fetch every stale symbol sequentially. No rate limiting needed on Polygon.
+    Fetch every stale symbol sequentially, obeying the rate limit.
 
-    First call (cold cache): fetches all symbols + SPY.
-    Subsequent calls within 4 hours: all cached → instant.
+    Daily  data: stale after 4 hours  → 1 call/symbol
+    Hourly data: stale after 30 minutes → 1 call/symbol
+
+    Fetches daily then hourly per symbol so each symbol is fully populated
+    before the scanner processes it.  Re-checks freshness inside the loop so
+    concurrent code paths (e.g. _get_spy_daily) don't trigger double-fetches.
     """
     all_syms = list(dict.fromkeys(symbols + ["SPY"]))
     now = time.time()
 
     with _cache_lock:
-        stale = [s for s in all_syms
-                 if s not in _cache or now - _cache[s].get("ts", 0) >= _CACHE_TTL]
+        daily_stale  = {s for s in all_syms
+                        if s not in _cache or now - _cache[s].get("daily_ts",  0) >= _DAILY_TTL}
+        hourly_stale = {s for s in all_syms
+                        if s not in _cache or now - _cache[s].get("hourly_ts", 0) >= _HOURLY_TTL}
 
-    if not stale:
+    total_calls = len(daily_stale) + len(hourly_stale)
+    if total_calls == 0:
         print(f"  [Poly] all {len(all_syms)} symbols fresh in cache — skipping fetch", flush=True)
         return
 
-    print(f"  [Poly] fetching {len(stale)}/{len(all_syms)} stale symbols…", flush=True)
+    est_min = total_calls * (_INTER_REQ_SLEEP + 1) / 60
+    print(
+        f"  [Poly] batch: {len(daily_stale)} daily + {len(hourly_stale)} hourly stale"
+        f" = {total_calls} API calls  (est. {est_min:.1f} min)",
+        flush=True,
+    )
 
-    for i, sym in enumerate(stale, 1):
-        print(f"  [Poly] [{i}/{len(stale)}] fetching {sym}…", flush=True)
-        df_d, df_h = _fetch_symbol(sym)
+    done = 0
+    for sym in all_syms:
+        needs_daily  = sym in daily_stale
+        needs_hourly = sym in hourly_stale
+        if not needs_daily and not needs_hourly:
+            continue
+
+        # Re-check: another code path may have already fetched this symbol
+        now = time.time()
         with _cache_lock:
-            _cache[sym] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
+            entry = _cache.get(sym, {})
+            if needs_daily  and now - entry.get("daily_ts",  0) < _DAILY_TTL:
+                needs_daily  = False
+            if needs_hourly and now - entry.get("hourly_ts", 0) < _HOURLY_TTL:
+                needs_hourly = False
+
+        if needs_daily:
+            done += 1
+            print(f"  [Poly] [{done}/{total_calls}] {sym} daily …", flush=True)
+            df_d = _fetch_daily(sym)
+            with _cache_lock:
+                e = _cache.setdefault(sym, {})
+                e["daily"]    = df_d
+                e["daily_ts"] = time.time()
+
+        if needs_hourly:
+            done += 1
+            print(f"  [Poly] [{done}/{total_calls}] {sym} hourly …", flush=True)
+            df_h = _fetch_hourly(sym)
+            with _cache_lock:
+                e = _cache.setdefault(sym, {})
+                e["hourly"]    = df_h
+                e["hourly_ts"] = time.time()
 
     with _cache_lock:
-        populated = sum(1 for s in stale if _cache.get(s, {}).get("daily") is not None)
-    print(f"  [Poly] batch done — {populated}/{len(stale)} symbols populated", flush=True)
+        populated = sum(1 for s in daily_stale if _cache.get(s, {}).get("daily") is not None)
+    print(f"  [Poly] batch done — {populated}/{len(daily_stale)} daily populated", flush=True)
 
 
 # ── Public OHLC getter ────────────────────────────────────────────────────
 
 def get_ohlc(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    global _cache_hits
     now = time.time()
+
     with _cache_lock:
-        cached = _cache.get(symbol)
-    if cached and now - cached["ts"] < _CACHE_TTL:
-        return cached["daily"], cached["hourly"]
-    # Single-symbol fallback (batch_scan_populate normally pre-fills this)
-    df_d, df_h = _fetch_symbol(symbol)
+        entry        = _cache.get(symbol, {})
+        daily_fresh  = now - entry.get("daily_ts",  0) < _DAILY_TTL
+        hourly_fresh = now - entry.get("hourly_ts", 0) < _HOURLY_TTL
+
+    if daily_fresh and hourly_fresh:
+        _cache_hits += 1
+        return entry.get("daily"), entry.get("hourly")
+
+    # Fetch only what is stale
+    if not daily_fresh:
+        df_d = _fetch_daily(symbol)
+        with _cache_lock:
+            e = _cache.setdefault(symbol, {})
+            e["daily"]    = df_d
+            e["daily_ts"] = time.time()
+
+    if not hourly_fresh:
+        df_h = _fetch_hourly(symbol)
+        with _cache_lock:
+            e = _cache.setdefault(symbol, {})
+            e["hourly"]    = df_h
+            e["hourly_ts"] = time.time()
+
     with _cache_lock:
-        _cache[symbol] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
-    return df_d, df_h
+        entry = _cache.get(symbol, {})
+    return entry.get("daily"), entry.get("hourly")
 
 
 def get_price(symbol: str) -> float | None:
-    """Return live last-trade price from Polygon, falling back to cached daily close."""
+    """Return live last-trade price, falling back to cached daily close."""
     url  = f"{_POLY_BASE}/v2/last/trade/{symbol}"
     data = _poly_get(url)
     if data and "results" in data:
@@ -178,11 +305,10 @@ def get_price(symbol: str) -> float | None:
             return float(data["results"]["p"])
         except Exception:
             pass
-    # Fallback: last close from cache
     with _cache_lock:
-        cached = _cache.get(symbol)
-    if cached and cached["daily"] is not None and len(cached["daily"]):
-        return float(cached["daily"]["close"].iloc[-1])
+        df = _cache.get(symbol, {}).get("daily")
+    if df is not None and len(df):
+        return float(df["close"].iloc[-1])
     return None
 
 
@@ -194,13 +320,16 @@ def invalidate(symbol: str) -> None:
 # ── SPY regime ────────────────────────────────────────────────────────────
 
 def _get_spy_daily() -> pd.DataFrame | None:
+    now = time.time()
     with _cache_lock:
-        cached = _cache.get("SPY")
-    if cached and cached["daily"] is not None:
-        return cached["daily"]
-    df_d, df_h = _fetch_symbol("SPY")
+        entry = _cache.get("SPY", {})
+        if entry.get("daily") is not None and now - entry.get("daily_ts", 0) < _DAILY_TTL:
+            return entry["daily"]
+    df_d = _fetch_daily("SPY")
     with _cache_lock:
-        _cache["SPY"] = {"daily": df_d, "hourly": df_h, "ts": time.time()}
+        e = _cache.setdefault("SPY", {})
+        e["daily"]    = df_d
+        e["daily_ts"] = time.time()
     return df_d
 
 
@@ -221,8 +350,7 @@ def get_spy_regime() -> dict:
 def get_relative_strength(symbol: str) -> float:
     df_spy = _get_spy_daily()
     with _cache_lock:
-        cached = _cache.get(symbol)
-    df_sym = cached["daily"] if cached else None
+        df_sym = _cache.get(symbol, {}).get("daily")
     if df_spy is None or df_sym is None:
         return 0.0
     if len(df_spy) < 21 or len(df_sym) < 21:
@@ -240,3 +368,28 @@ def get_earnings_flag(symbol: str) -> bool:
 
 def refresh_earnings_cache(symbols: list[str]) -> None:
     print("  [Poly] earnings refresh skipped (not implemented)", flush=True)
+
+
+# ── Status snapshot (for /api/poly_status) ───────────────────────────────
+
+def poly_status() -> dict:
+    """Return a snapshot of rate-limiter and cache state."""
+    now = time.time()
+    calls_recent = sum(1 for t in _call_times if now - t <= _RATE_WINDOW)
+    with _cache_lock:
+        cache_size = len(_cache)
+        daily_pop  = sum(1 for v in _cache.values() if v.get("daily")  is not None)
+        hourly_pop = sum(1 for v in _cache.values() if v.get("hourly") is not None)
+    return {
+        "last_call_time":        _last_call_time if _last_call_time else None,
+        "calls_in_last_minute":  calls_recent,
+        "rate_limit_per_minute": _RATE_LIMIT,
+        "total_requests":        _total_requests,
+        "cache_hits":            _cache_hits,
+        "cache_size":            cache_size,
+        "daily_populated":       daily_pop,
+        "hourly_populated":      hourly_pop,
+        "inter_request_sleep_s": _INTER_REQ_SLEEP,
+        "daily_ttl_hours":       _DAILY_TTL / 3600,
+        "hourly_ttl_minutes":    _HOURLY_TTL / 60,
+    }
