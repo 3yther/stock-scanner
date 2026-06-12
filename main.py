@@ -1,7 +1,7 @@
 """
 Stock Scanner & Paper Trading Bot
 ----------------------------------
-Data source : Alpha Vantage REST API (ALPHA_VANTAGE_KEY env var)
+Data source : Polygon.io REST API (POLYGON_API_KEY env var)
 Universe    : 20 S&P 500 + SPCX (21 symbols)
 Strategy    : Multi-timeframe MACD (1D trend + 1H entry)
 Dashboard   : http://localhost:5002
@@ -28,7 +28,7 @@ def main():
     print(f"  Universe    : {len(config.SYMBOLS)} symbols")
     print(f"  Strategy    : Multi-Timeframe MACD (1D trend + 1H entry)")
     print(f"  Balance     : ${config.INITIAL_BALANCE:,.2f}  |  Max positions: {config.MAX_POSITIONS}")
-    print(f"  Data source : Alpha Vantage (key={'SET' if __import__('os').getenv('ALPHA_VANTAGE_KEY') else 'NOT SET'})")
+    print(f"  Data source : Polygon.io (key={'SET' if __import__('os').getenv('POLYGON_API_KEY') else 'NOT SET'})")
     print("=" * 62)
     print(f"\n  Symbols: {', '.join(config.SYMBOLS)}\n")
 
