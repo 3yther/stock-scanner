@@ -49,8 +49,19 @@ import strategies
 
 # ── Constants ─────────────────────────────────────────────────────────────
 SLIPPAGE        = 0.0005     # 0.05% on entry and exit
-_WARMUP_DAYS    = 160        # calendar days of history fetched before the start
+_REGIME_BARS    = 50         # SPY bars the regime filter needs (SMA50) — a floor
+_WARMUP_MARGIN  = 25         # extra calendar days of cushion on top of the warmup
 _HOURLY_WINDOW  = 300        # trailing hourly bars used for the 1H entry signal
+
+
+def _warmup_calendar_days(warmup_bars: int) -> int:
+    """Convert a trading-bar warmup requirement into calendar days to fetch.
+
+    ~252 trading days per 365 calendar days → ×1.45, plus a margin for holiday
+    clusters. So a 200-bar momentum warmup fetches ~315 calendar days of history
+    BEFORE the start date — enough for day-one SMA200/momentum to be real.
+    """
+    return int(warmup_bars * 365 / 252) + _WARMUP_MARGIN
 
 # ── Run state (single backtest at a time) ─────────────────────────────────
 _state: dict = {
@@ -200,8 +211,22 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
         else:  # full
             sim_start, sim_end = user_start, end
 
-        # Always fetch the full user range (minus warmup) regardless of slice.
-        fetch_start = (user_start - timedelta(days=_WARMUP_DAYS)).isoformat()
+        # How much history this strategy needs before its first valid signal.
+        # The regime filter (SMA50) is a floor every run shares.
+        warmup_bars     = max(strat.warmup_bars, _REGIME_BARS)
+        warmup_calendar = _warmup_calendar_days(warmup_bars)
+
+        # Fetch from warmup BEFORE the user start, through the full end. This one
+        # window covers every slice: FULL/TRAIN warm up before user_start, and
+        # VALIDATION (which starts later, at split_dt) gets even more prior
+        # history for free. Warmup bars are all in the PAST relative to the first
+        # tradeable day, so there is no lookahead.
+        fetch_start = (user_start - timedelta(days=warmup_calendar)).isoformat()
+
+        print(f"[BT] strategy = {strat.name}", flush=True)
+        print(f"[BT] strategy warmup_bars required = {strat.warmup_bars} "
+              f"(engine uses {warmup_bars} incl. regime SMA50 floor; "
+              f"prefetching {warmup_calendar} calendar days before {user_start})", flush=True)
 
         # SPY drives the trading calendar and the regime filter.
         all_syms = list(dict.fromkeys(symbols + ["SPY"]))
@@ -232,18 +257,52 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                     hourly_data[sym] = _HourlySeries(dfh)
 
         if "SPY" not in daily:
-            _set(status="error", error="No SPY data returned — cannot run backtest.",
+            print(f"[BT] insufficient data: got 0 SPY bars, need {warmup_bars} "
+                  f"— SPY fetch returned nothing (rate-limited / no API key / range "
+                  f"beyond plan history?)", flush=True)
+            _set(status="error", error="No SPY data returned — cannot run backtest "
+                 f"(need ~{warmup_bars} SPY bars). Check API key / rate limits / history depth.",
                  finished_at=time.time())
             return
 
         spy = daily["SPY"]
-        # Master calendar: SPY trading days within the SIMULATED slice only.
-        calendar = [d for d in spy.dates if sim_start <= d <= sim_end]
-        # Need a previous bar to fill against, and 50 SPY bars for the regime.
+        bar_counts = {s: len(ser.df) for s, ser in daily.items()}
+        min_sym    = min(bar_counts, key=bar_counts.get)
+        print(f"[BT] data loaded: SPY {len(spy.df)} daily bars, "
+              f"range {spy.dates[0]} to {spy.dates[-1]} "
+              f"(thinnest symbol {min_sym}={bar_counts[min_sym]} bars; "
+              f"{len(daily)-1}/{len(symbols)} tradeable symbols loaded)", flush=True)
+
+        # Master calendar: SPY trading days within the SIMULATED slice only —
+        # this is the TRADEABLE window. Warmup bars sit BEFORE sim_start.
+        calendar      = [d for d in spy.dates if sim_start <= d <= sim_end]
+        warmup_avail  = sum(1 for d in spy.dates if d < sim_start)   # bars before the window
+        print(f"[BT] tradeable window after warmup: {sim_start} to {sim_end}, "
+              f"{len(calendar)} trading days "
+              f"({warmup_avail} warmup bars available before it)", flush=True)
+
+        if warmup_avail < warmup_bars:
+            # Not necessarily fatal (early signals just stay flat), but flag it so
+            # a thin warmup is never mistaken for a strategy that 'does nothing'.
+            print(f"[BT] insufficient data: got {warmup_avail} warmup bars before "
+                  f"{sim_start}, need {warmup_bars} — early signals will be no-data "
+                  f"(extend the start date or fetch more history).", flush=True)
+
+        # Need a previous bar to fill against, and SPY bars for the regime.
         if len(calendar) < 2:
+            avail_first = spy.dates[0] if spy.dates else "—"
+            avail_last  = spy.dates[-1] if spy.dates else "—"
+            reason = (
+                f"no SPY trading days fall inside {sim_start}..{sim_end}; "
+                f"loaded data only covers {avail_first}..{avail_last}"
+            )
+            print(f"[BT] insufficient data: 0 tradeable days — {reason}. "
+                  f"This is a DATA-COVERAGE problem, not a slice bug.", flush=True)
             _set(status="error",
-                 error=f"{split.upper()} slice too short / no trading days "
-                       f"({sim_start} → {sim_end}).",
+                 error=f"{split.upper()} slice has no trading days "
+                       f"({sim_start} → {sim_end}). Loaded data covers "
+                       f"{avail_first} → {avail_last}. Likely the requested range is "
+                       f"outside your Polygon history depth, or the fetch was rate-limited.",
                  finished_at=time.time())
             return
 

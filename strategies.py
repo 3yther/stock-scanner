@@ -329,6 +329,13 @@ class Strategy:
     label       = "Base"
     description = ""
 
+    # How many prior daily bars this strategy needs before it can emit its first
+    # valid signal (longest lookback it touches). The backtester prefetches at
+    # least this much history BEFORE the requested start so day-one indicators
+    # are real — never lookahead, since warmup bars are all in the past relative
+    # to the first tradeable day.
+    warmup_bars = 50
+
     def generate_signal(self, symbol: str, df_d: pd.DataFrame | None,
                         df_h: pd.DataFrame | None, df_spy: pd.DataFrame | None,
                         rs: float = 0.0, earnings_soon: bool = False) -> dict:
@@ -349,6 +356,8 @@ class MacdMtfStrategy(Strategy):
     label       = "MACD Multi-Timeframe"
     description = ("1D MACD trend filter + 1H MACD entry cross, scored on volume "
                    "and relative strength vs SPY. This is the live strategy.")
+    # MACD(12/26/9) needs ~26 bars; 20-bar volume avg + 21-bar RS → ~35 to settle.
+    warmup_bars = 35
 
     def generate_signal(self, symbol, df_d, df_h, df_spy, rs=0.0, earnings_soon=False):
         return score_symbol(symbol, df_d, df_h, rs, earnings_soon)
@@ -373,6 +382,8 @@ class LiquiditySweepStrategy(Strategy):
         self.lookback = lookback
         self.require_bullish_close = require_bullish_close
         self.description = self.description.replace("{N}", str(lookback))
+        # N-bar sweep window + the 50-bar SMA trend filter.
+        self.warmup_bars = max(lookback + 1, 50)
 
     def generate_signal(self, symbol, df_d, df_h, df_spy, rs=0.0, earnings_soon=False):
         n = self.lookback
@@ -403,10 +414,58 @@ class LiquiditySweepStrategy(Strategy):
                            earnings_soon=earnings_soon, trend_bullish=trend_up)
 
 
+class MomentumStrategy(Strategy):
+    """Classic long-term momentum on daily candles.
+
+    Long when price is above its 200-day SMA (long-term uptrend) AND its 6-month
+    (126-day) return is positive; ranks candidates by momentum strength so the
+    strongest get the limited position slots. Needs a LONG warmup (200 bars) —
+    the case that exposed the engine's old fixed-warmup bug. Risk/exit rules are
+    the shared core; only the entry differs.
+    """
+    name        = "momentum"
+    label       = "Long-Term Momentum"
+    description = ("Long when price is above its 200-day SMA and 6-month "
+                   "(126-day) momentum is positive; ranked by momentum strength.")
+    warmup_bars = 200
+
+    def __init__(self, sma_period: int = 200, mom_lookback: int = 126):
+        self.sma_period   = sma_period
+        self.mom_lookback = mom_lookback
+        # Binding lookback: the SMA period or the momentum window, whichever is
+        # longer (+1 bar for the return's base).
+        self.warmup_bars  = max(sma_period, mom_lookback + 1)
+
+    def generate_signal(self, symbol, df_d, df_h, df_spy, rs=0.0, earnings_soon=False):
+        need = max(self.sma_period, self.mom_lookback + 1)
+        if df_d is None or len(df_d) < need:
+            return make_result(symbol, no_data=True)
+
+        close = df_d["close"]
+        price = float(close.iloc[-1])
+        sma   = float(close.rolling(self.sma_period).mean().iloc[-1])
+        mom   = (price / float(close.iloc[-(self.mom_lookback + 1)]) - 1) * 100
+        trend_up = price > sma > 0
+
+        if trend_up and mom > 0 and not earnings_soon:
+            score = min(100.0, 50.0 + mom)   # stronger momentum ranks higher
+            return make_result(symbol, signal=1, score=score, price=price,
+                               earnings_soon=earnings_soon, trend_bullish=trend_up,
+                               momentum_pct=round(mom, 2), sma200=round(sma, 2))
+        return make_result(symbol, signal=0, score=0.0, price=price,
+                           earnings_soon=earnings_soon, trend_bullish=trend_up)
+
+    def entry_admits(self, result, regime):
+        # Momentum self-selects by trend + positive momentum; rank by score
+        # (strength) for the limited slots rather than the MACD score gate.
+        return result.get("signal") == 1 and not result.get("earnings_soon")
+
+
 # Registry — add new strategies here and they appear in the backtest selector.
 STRATEGIES: dict[str, Strategy] = {
     MacdMtfStrategy().name:        MacdMtfStrategy(),
     LiquiditySweepStrategy().name: LiquiditySweepStrategy(),
+    MomentumStrategy().name:       MomentumStrategy(),
 }
 DEFAULT_STRATEGY = "macd_mtf"
 
