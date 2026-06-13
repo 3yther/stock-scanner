@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Scanner — Strategy Backtest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0D1117; --surface: #161B22; --surface2: #1C2128;
+    --border: #21262D; --blue: #58A6FF; --green: #3FB950;
+    --red: #F85149; --yellow: #D29922; --purple: #BC8CFF;
+    --subtle: #8B949E; --text: #E6EDF3;
+    --mono: 'JetBrains Mono', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: var(--surface); position: sticky; top: 0; z-index: 100;
+  }
+  .hdr-left { display: flex; align-items: center; gap: 12px; }
+  .logo { font-weight: 700; font-size: 16px; }
+  .back-link {
+    font-size: 12px; color: var(--blue); text-decoration: none;
+    padding: 4px 10px; border: 1px solid rgba(88,166,255,.3);
+    border-radius: 6px; background: rgba(88,166,255,.07);
+  }
+  .back-link:hover { background: rgba(88,166,255,.14); }
+
+  main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+  /* Sim banner */
+  .sim-banner {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(210,153,34,.10); border: 1px solid rgba(210,153,34,.4);
+    color: var(--yellow); border-radius: 10px; padding: 12px 18px;
+    margin-bottom: 20px; font-weight: 600; font-size: 13px; letter-spacing: .3px;
+  }
+  .sim-banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--yellow); }
+
+  /* Form */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+  .card-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .6px; color: var(--subtle);
+  }
+  .form-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; padding: 18px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing: .5px; }
+  .field input, .field select {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-family: var(--mono); font-size: 13px; min-width: 150px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--blue); }
+  .btn {
+    background: var(--blue); color: #04121f; border: none; border-radius: 8px;
+    padding: 10px 22px; font-weight: 700; font-size: 13px; cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { font-size: 11px; color: var(--subtle); padding: 0 18px 16px; }
+
+  /* Progress */
+  #progress-card { display: none; }
+  .progress-track { height: 10px; background: var(--surface2); border-radius: 6px; overflow: hidden; margin: 4px 0 10px; }
+  .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--blue), var(--purple)); transition: width .4s ease; }
+  .progress-msg { font-size: 12px; color: var(--subtle); font-family: var(--mono); }
+  .spinner { display:inline-block; width:13px; height:13px; border:2px solid rgba(88,166,255,.3); border-top-color: var(--blue); border-radius:50%; animation: spin .8s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #results { display: none; }
+  #error-box { display:none; background: rgba(248,81,73,.1); border:1px solid rgba(248,81,73,.4); color: var(--red); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; font-size:13px; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+  @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px)  { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .stat-label { font-size: 11px; font-weight: 500; color: var(--subtle); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .stat-val { font-family: var(--mono); font-size: 22px; font-weight: 500; }
+  .stat-val.pos { color: var(--green); }
+  .stat-val.neg { color: var(--red); }
+  .stat-sub { font-size: 11px; color: var(--subtle); margin-top: 4px; font-family: var(--mono); }
+
+  .chart-wrap { padding: 16px; position: relative; height: 280px; }
+  .chart-wrap.short { height: 170px; }
+  .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+
+  .table-wrap { overflow-x: auto; max-height: 520px; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; padding: 9px 14px; font-size: 10px; font-weight: 600;
+    color: var(--subtle); text-transform: uppercase; letter-spacing: .5px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+    position: sticky; top: 0; background: var(--surface); z-index: 2;
+  }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th .arrow { opacity: .5; font-size: 9px; }
+  th:not(:first-child) { text-align: right; }
+  td { padding: 8px 14px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  td:not(:first-child) { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  .empty { text-align: center; color: var(--subtle); padding: 28px; font-size: 13px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+
+  footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 24px; border-top: 1px solid var(--border);
+    color: var(--subtle); font-size: 12px;
+  }
+  .pill { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--surface2); color: var(--subtle); border:1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hdr-left">
+    <a href="/" class="back-link">&#x2190; Dashboard</a>
+    <span class="logo">&#x1F9EA; Strategy Backtest</span>
+  </div>
+  <div>
+    <a href="/stats" class="back-link">Analytics &#x2192;</a>
+  </div>
+</header>
+
+<main>
+
+  <div class="sim-banner">
+    <span class="dot"></span>
+    BACKTEST &mdash; Simulated, not live trades. Runs the exact live strategy over historical data. Read-only; nothing is traded and the live ledger is never touched.
+  </div>
+
+  <!-- Form -->
+  <div class="card">
+    <div class="card-hdr">Run a Backtest</div>
+    <div class="form-row">
+      <div class="field">
+        <label>Start date</label>
+        <input type="date" id="f-start">
+      </div>
+      <div class="field">
+        <label>End date</label>
+        <input type="date" id="f-end">
+      </div>
+      <div class="field">
+        <label>Starting capital ($)</label>
+        <input type="number" id="f-capital" value="1000" min="1" step="100">
+      </div>
+      <div class="field">
+        <label>Entry timeframe</label>
+        <select id="f-mode">
+          <option value="daily" selected>Daily-only (fast, ~1 call/symbol)</option>
+          <option value="hourly">1H entry + 1D trend (slower, more API calls)</option>
+        </select>
+      </div>
+      <div class="field">
+        <button class="btn" id="run-btn">Run Backtest</button>
+      </div>
+    </div>
+    <div class="hint">
+      Defaults to the last 2 years. First run fetches history with a 12s rate-limit delay between calls
+      (a few minutes); results are cached so re-runs are instant.
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="card" id="progress-card">
+    <div class="card-hdr">Running&hellip;</div>
+    <div style="padding:18px">
+      <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-msg"><span class="spinner"></span><span id="progress-msg">Starting&hellip;</span></div>
+    </div>
+  </div>
+
+  <div id="error-box"></div>
+
+  <!-- Results -->
+  <div id="results">
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+      <span class="pill" id="r-mode">mode</span>
+      <span class="pill" id="r-range">range</span>
+      <span class="pill" id="r-slip">slippage</span>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Return</div>
+        <div class="stat-val" id="m-return">&mdash;</div>
+        <div class="stat-sub" id="m-finaleq"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Max Drawdown</div>
+        <div class="stat-val neg" id="m-dd">&mdash;</div>
+        <div class="stat-sub">Worst peak-to-trough</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-val" id="m-wr">&mdash;</div>
+        <div class="stat-sub" id="m-trades"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Profit Factor</div>
+        <div class="stat-val" id="m-pf">&mdash;</div>
+        <div class="stat-sub">Gross wins &divide; losses</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sharpe (ann.)</div>
+        <div class="stat-val" id="m-sharpe">&mdash;</div>
+        <div class="stat-sub">Risk-adjusted</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Win</div>
+        <div class="stat-val pos" id="m-aw">&mdash;</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Loss</div>
+        <div class="stat-val neg" id="m-al">&mdash;</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Expectancy</div>
+        <div class="stat-val" id="m-exp">&mdash;</div>
+        <div class="stat-sub">Per trade</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Gross Wins</div>
+        <div class="stat-val pos" id="m-gw">&mdash;</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Gross Losses</div>
+        <div class="stat-val neg" id="m-gl">&mdash;</div>
+      </div>
+    </div>
+
+    <!-- Equity curve -->
+    <div class="card">
+      <div class="card-hdr">Equity Curve <span style="text-transform:none;color:var(--subtle)">— simulated account</span></div>
+      <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+    </div>
+
+    <!-- Drawdown -->
+    <div class="card">
+      <div class="card-hdr">Drawdown (%)</div>
+      <div class="chart-wrap short"><canvas id="dd-chart"></canvas></div>
+    </div>
+
+    <!-- Per-symbol + best/worst -->
+    <div class="two-col">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-hdr">By Symbol</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symbol</th><th>Trades</th><th>Win %</th><th>Total P&amp;L</th></tr></thead>
+            <tbody id="sym-body"><tr><td colspan="4" class="empty">No data</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-hdr">Best Trade</div>
+          <div class="table-wrap"><table><tbody id="best-body"><tr><td colspan="5" class="empty">No data</td></tr></tbody></table></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="card-hdr">Worst Trade</div>
+          <div class="table-wrap"><table><tbody id="worst-body"><tr><td colspan="5" class="empty">No data</td></tr></tbody></table></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trade log -->
+    <div class="card">
+      <div class="card-hdr">Trade Log <span style="text-transform:none;color:var(--subtle)">— click a column to sort</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="sortable" data-k="symbol">Symbol <span class="arrow"></span></th>
+            <th class="sortable" data-k="entry_date">Entry <span class="arrow"></span></th>
+            <th class="sortable" data-k="entry_price">Entry $ <span class="arrow"></span></th>
+            <th class="sortable" data-k="exit_date">Exit <span class="arrow"></span></th>
+            <th class="sortable" data-k="exit_price">Exit $ <span class="arrow"></span></th>
+            <th class="sortable" data-k="hold_days">Days <span class="arrow"></span></th>
+            <th class="sortable" data-k="exit_reason">Reason <span class="arrow"></span></th>
+            <th class="sortable" data-k="pnl_pct">P&amp;L % <span class="arrow"></span></th>
+            <th class="sortable" data-k="pnl">P&amp;L $ <span class="arrow"></span></th>
+          </tr></thead>
+          <tbody id="trade-body"><tr><td colspan="9" class="empty">No trades</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<footer>
+  <span>Stock Scanner &mdash; Backtest is simulated only</span>
+  <span style="font-size:11px">Made by Amir</span>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+let equityChart, ddChart, lastTrades = [], sortKey = 'entry_date', sortDir = 1;
+
+function money(n){ if(n==null) return '—'; const v=parseFloat(n); return (v<0?'-$':'$')+Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function pct(n){ if(n==null) return '—'; const v=parseFloat(n); return (v>=0?'+':'')+v.toFixed(2)+'%'; }
+function cls(n){ return parseFloat(n)>=0 ? 'pos':'neg'; }
+
+const CHART_DEFAULTS = {
+  color: '#E6EDF3', maintainAspectRatio:false,
+  plugins: { legend: { display: false } },
+  elements: { point: { radius: 0 } },
+  scales: {
+    x: { ticks: { color:'#8B949E', font:{size:10}, maxTicksLimit:12 }, grid:{ color:'rgba(33,38,45,.6)' } },
+    y: { ticks: { color:'#8B949E', font:{size:10} }, grid:{ color:'rgba(33,38,45,.6)' } },
+  },
+};
+
+// ---- default dates: last 2 years ----
+(function(){
+  const today = new Date();
+  const two = new Date(); two.setFullYear(today.getFullYear()-2);
+  $('f-end').value = today.toISOString().slice(0,10);
+  $('f-start').value = two.toISOString().slice(0,10);
+})();
+
+// ---- run ----
+$('run-btn').addEventListener('click', async () => {
+  $('error-box').style.display='none';
+  $('results').style.display='none';
+  const body = {
+    start: $('f-start').value, end: $('f-end').value,
+    capital: parseFloat($('f-capital').value)||1000, mode: $('f-mode').value,
+  };
+  $('run-btn').disabled = true;
+  try {
+    const res = await (await fetch('/api/backtest_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    if(!res.started){ showError(res.reason || 'Could not start backtest'); $('run-btn').disabled=false; return; }
+    $('progress-card').style.display='block';
+    poll();
+  } catch(e){ showError('Request failed: '+e); $('run-btn').disabled=false; }
+});
+
+function showError(msg){ const b=$('error-box'); b.textContent='⚠ '+msg; b.style.display='block'; }
+
+async function poll(){
+  try {
+    const s = await (await fetch('/api/backtest_status')).json();
+    const p = Math.round((s.progress||0)*100);
+    $('progress-bar').style.width = p+'%';
+    $('progress-msg').textContent = (s.message||'') + '  ('+p+'%)';
+    if(s.status==='done'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; render(s.result); return; }
+    if(s.status==='error'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; showError(s.error||'Backtest failed'); return; }
+    setTimeout(poll, 1000);
+  } catch(e){ setTimeout(poll, 2000); }
+}
+
+// If a finished run already exists (e.g. page reload), show it.
+(async function(){
+  try { const s = await (await fetch('/api/backtest_status')).json();
+    if(s.status==='done' && s.result) render(s.result);
+    else if(s.status==='running'||s.status==='fetching'){ $('progress-card').style.display='block'; $('run-btn').disabled=true; poll(); }
+  } catch(e){}
+})();
+
+function render(r){
+  if(!r) return;
+  $('results').style.display='block';
+  $('r-mode').textContent = r.mode_label;
+  $('r-range').textContent = r.start_date+' → '+r.end_date;
+  $('r-slip').textContent = 'slippage '+r.slippage_pct+'% · fills next open';
+
+  $('m-return').textContent = pct(r.total_return_pct);
+  $('m-return').className = 'stat-val '+cls(r.total_return_pct);
+  $('m-finaleq').textContent = 'Final '+money(r.final_equity)+' from '+money(r.initial_balance);
+  $('m-dd').textContent = (r.max_drawdown_pct).toFixed(2)+'%';
+  $('m-wr').textContent = r.win_rate+'%';
+  $('m-wr').className = 'stat-val '+(r.win_rate>=50?'pos':'neg');
+  $('m-trades').textContent = r.total_trades+' trades';
+  $('m-pf').textContent = r.profit_factor==null ? '∞' : parseFloat(r.profit_factor).toFixed(2);
+  $('m-pf').className = 'stat-val '+(r.profit_factor==null||r.profit_factor>=1.5?'pos':(r.profit_factor>=1?'':'neg'));
+  $('m-sharpe').textContent = parseFloat(r.sharpe).toFixed(2);
+  $('m-sharpe').className = 'stat-val '+(r.sharpe>=1?'pos':(r.sharpe>=0?'':'neg'));
+  $('m-aw').textContent = money(r.avg_win);
+  $('m-al').textContent = money(r.avg_loss);
+  $('m-exp').textContent = money(r.expectancy);
+  $('m-exp').className = 'stat-val '+cls(r.expectancy);
+  $('m-gw').textContent = money(r.gross_wins);
+  $('m-gl').textContent = money(r.gross_losses);
+
+  buildEquity(r.equity_curve, r.initial_balance);
+  buildDD(r.drawdown_curve);
+
+  // by symbol
+  $('sym-body').innerHTML = (r.by_symbol&&r.by_symbol.length) ? r.by_symbol.map(b=>`<tr>
+    <td style="color:var(--blue);font-weight:600">${b.symbol}</td>
+    <td>${b.trades}</td>
+    <td class="${b.win_rate>=50?'pos':'neg'}">${b.win_rate}%</td>
+    <td class="${cls(b.pnl)}">${money(b.pnl)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No closed trades</td></tr>';
+
+  $('best-body').innerHTML  = tradeMini(r.best_trade);
+  $('worst-body').innerHTML = tradeMini(r.worst_trade);
+
+  lastTrades = r.trades || [];
+  renderTrades();
+}
+
+function tradeMini(t){
+  if(!t) return '<tr><td colspan="5" class="empty">No data</td></tr>';
+  return `<tr>
+    <td style="color:var(--blue);font-weight:600">${t.symbol}</td>
+    <td style="color:var(--subtle)">${t.entry_date}→${t.exit_date}</td>
+    <td style="color:var(--subtle)">${t.exit_reason}</td>
+    <td class="${cls(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
+    <td class="${cls(t.pnl)}">${money(t.pnl)}</td></tr>`;
+}
+
+function renderTrades(){
+  const tb = $('trade-body');
+  if(!lastTrades.length){ tb.innerHTML='<tr><td colspan="9" class="empty">No trades</td></tr>'; return; }
+  const rows = [...lastTrades].sort((a,b)=>{
+    let x=a[sortKey], y=b[sortKey];
+    if(typeof x==='number'&&typeof y==='number') return (x-y)*sortDir;
+    return String(x).localeCompare(String(y))*sortDir;
+  });
+  tb.innerHTML = rows.map(t=>`<tr>
+    <td style="color:var(--blue);font-weight:600">${t.symbol}</td>
+    <td style="color:var(--subtle)">${t.entry_date}</td>
+    <td>${parseFloat(t.entry_price).toFixed(2)}</td>
+    <td style="color:var(--subtle)">${t.exit_date}</td>
+    <td>${parseFloat(t.exit_price).toFixed(2)}</td>
+    <td>${t.hold_days}</td>
+    <td style="color:var(--subtle)">${t.exit_reason}</td>
+    <td class="${cls(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
+    <td class="${cls(t.pnl)}">${money(t.pnl)}</td></tr>`).join('');
+}
+
+document.querySelectorAll('th.sortable').forEach(th=>{
+  th.addEventListener('click', ()=>{
+    const k = th.dataset.k;
+    if(sortKey===k) sortDir*=-1; else { sortKey=k; sortDir = (k==='pnl'||k==='pnl_pct'||k==='hold_days'||k.includes('price'))? -1 : 1; }
+    document.querySelectorAll('th.sortable .arrow').forEach(a=>a.textContent='');
+    th.querySelector('.arrow').textContent = sortDir>0?'▲':'▼';
+    renderTrades();
+  });
+});
+
+function buildEquity(curve, initial){
+  if(equityChart) equityChart.destroy();
+  const ctx = $('equity-chart').getContext('2d');
+  const labels = curve.map(d=>d.date);
+  const values = curve.map(d=>d.equity);
+  const baseline = labels.map(()=>initial);
+  equityChart = new Chart(ctx,{ type:'line', data:{ labels, datasets:[
+      { label:'Equity', data:values, borderColor:'#3FB950', backgroundColor:'rgba(63,185,80,.08)', fill:true, tension:.2, borderWidth:2 },
+      { label:'Start', data:baseline, borderColor:'rgba(139,148,158,.4)', borderDash:[4,4], borderWidth:1, fill:false },
+    ]},
+    options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
+      plugins:{ ...CHART_DEFAULTS.plugins, tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+money(c.raw) } } },
+      scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>'$'+v.toLocaleString() } } } } });
+}
+
+function buildDD(curve){
+  if(ddChart) ddChart.destroy();
+  const ctx = $('dd-chart').getContext('2d');
+  const labels = curve.map(d=>d.date);
+  const values = curve.map(d=>d.drawdown);
+  ddChart = new Chart(ctx,{ type:'line', data:{ labels, datasets:[
+      { label:'Drawdown', data:values, borderColor:'#F85149', backgroundColor:'rgba(248,81,73,.12)', fill:true, tension:.2, borderWidth:1.5 } ]},
+    options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
+      plugins:{ ...CHART_DEFAULTS.plugins, tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+c.raw.toFixed(2)+'%' } } },
+      scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, max:0, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>v.toFixed(0)+'%' } } } } });
+}
+</script>
+</body>
+</html>

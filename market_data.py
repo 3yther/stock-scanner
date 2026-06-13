@@ -25,6 +25,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests as _http
 
+import strategies
+
 # ── Config ────────────────────────────────────────────────────────────────
 POLYGON_API_KEY  = os.getenv("POLYGON_API_KEY", "")
 _POLY_BASE       = "https://api.polygon.io"
@@ -454,15 +456,8 @@ def _get_spy_daily() -> pd.DataFrame | None:
 
 
 def get_spy_regime() -> dict:
-    df = _get_spy_daily()
-    if df is None or len(df) < 50:
-        return {"regime": "NEUTRAL", "spy_price": 0.0, "spy_50sma": 0.0}
-    sma50 = float(df["close"].rolling(50).mean().iloc[-1])
-    price = float(df["close"].iloc[-1])
-    if   price > sma50 * 1.005: regime = "BULLISH"
-    elif price < sma50 * 0.995: regime = "BEARISH"
-    else:                        regime = "NEUTRAL"
-    return {"regime": regime, "spy_price": round(price, 2), "spy_50sma": round(sma50, 2)}
+    # Delegates to the shared strategy core so live and backtest agree exactly.
+    return strategies.spy_regime(_get_spy_daily())
 
 
 # ── Relative strength ─────────────────────────────────────────────────────
@@ -471,13 +466,7 @@ def get_relative_strength(symbol: str) -> float:
     df_spy = _get_spy_daily()
     with _cache_lock:
         df_sym = _cache.get(symbol, {}).get("daily")
-    if df_spy is None or df_sym is None:
-        return 0.0
-    if len(df_spy) < 21 or len(df_sym) < 21:
-        return 0.0
-    spy_ret = (df_spy["close"].iloc[-1] / df_spy["close"].iloc[-21] - 1) * 100
-    sym_ret = (df_sym["close"].iloc[-1] / df_sym["close"].iloc[-21] - 1) * 100
-    return round(float(sym_ret - spy_ret), 2)
+    return strategies.relative_strength(df_sym, df_spy)
 
 
 # ── Earnings (stub) ───────────────────────────────────────────────────────
@@ -548,6 +537,94 @@ def cache_status() -> dict:
         "api_calls_today":  calls_today,
         "cache_hit_rate":   hit_rate,
     }
+
+
+# ── Backtest history (long-range fetch, separately cached on disk) ────────
+# Kept in its own cache file so a multi-year backtest pull never disturbs the
+# small, fast live-scan cache. Re-running a backtest with the same range/symbols
+# is served entirely from disk — zero API calls.
+_BACKTEST_CACHE_FILE = "/tmp/polygon_backtest_cache.json"
+_bt_cache:  dict[str, dict] = {}      # "SYM:tf:from:to" → column-array dict
+_bt_lock    = threading.Lock()
+_bt_loaded  = False
+
+
+def _bt_load() -> None:
+    global _bt_loaded
+    if _bt_loaded:
+        return
+    _bt_loaded = True
+    if not os.path.exists(_BACKTEST_CACHE_FILE):
+        return
+    try:
+        with open(_BACKTEST_CACHE_FILE) as f:
+            data = json.load(f)
+        with _bt_lock:
+            _bt_cache.update(data)
+        print(f"  [BACKTEST] loaded {len(data)} cached history series from {_BACKTEST_CACHE_FILE}", flush=True)
+    except Exception as exc:
+        print(f"  [BACKTEST] history cache load failed: {exc}", flush=True)
+
+
+def _bt_save() -> None:
+    try:
+        with _bt_lock:
+            snap = dict(_bt_cache)
+        tmp = _BACKTEST_CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snap, f)
+        os.replace(tmp, _BACKTEST_CACHE_FILE)
+    except Exception as exc:
+        print(f"  [BACKTEST] history cache save failed: {exc}", flush=True)
+
+
+def fetch_history(symbol: str, timeframe: str, start: str, end: str) -> pd.DataFrame | None:
+    """Fetch full OHLCV history for a backtest, cached to disk.
+
+    timeframe : 'day' or 'hour'.  start/end : 'YYYY-MM-DD' (inclusive).
+    Uses the rate-limited _poly_get (12 s spacing, 429 retry) and follows
+    Polygon's next_url pagination. Cached by symbol/timeframe/range so a re-run
+    with the same parameters costs no API calls.
+    """
+    _bt_load()
+    key = f"{symbol}:{timeframe}:{start}:{end}"
+    with _bt_lock:
+        cols = _bt_cache.get(key)
+    if cols is not None:
+        print(f"  [BACKTEST] cache hit {symbol} {timeframe} {start}→{end}", flush=True)
+        return _cols_to_df(cols)
+
+    url = (
+        f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/{timeframe}"
+        f"/{start}/{end}?adjusted=true&sort=asc&limit=50000"
+    )
+    pages: list[pd.DataFrame] = []
+    page = 0
+    while url:
+        page += 1
+        data = _poly_get(url)
+        if not data:
+            break
+        df_page = _parse_aggs(data, symbol, timeframe)
+        if df_page is not None:
+            pages.append(df_page)
+        url = data.get("next_url") or None   # _poly_get appends apiKey
+
+    if not pages:
+        print(f"  [BACKTEST] {symbol} {timeframe} {start}→{end}: 0 bars", flush=True)
+        return None
+
+    df = (
+        pd.concat(pages)
+        .drop_duplicates("datetime")
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    with _bt_lock:
+        _bt_cache[key] = _df_to_cols(df)
+    _bt_save()
+    print(f"  [BACKTEST] fetched {symbol} {timeframe} {start}→{end}: {len(df)} bars ({page} page(s))", flush=True)
+    return df
 
 
 # ── Load disk cache on import so a restart doesn't burn API calls ─────────

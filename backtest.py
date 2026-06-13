@@ -1,0 +1,443 @@
+"""
+backtest.py — historical simulation of the EXACT live strategy.
+
+Runs the same multi-timeframe MACD strategy we trade live, over historical
+candles, so we can see whether it makes money before risking anything. It calls
+the SAME functions the live bot uses (strategies.score_symbol for entries,
+strategies.manage_position for exits, plus the shared sizing / sector / regime
+helpers), so the backtest and the live bot can never drift apart.
+
+────────────────────────────────────────────────────────────────────────────
+NO LOOKAHEAD BIAS — the one rule that matters
+────────────────────────────────────────────────────────────────────────────
+The simulation walks forward one trading day at a time. At each day D:
+
+  • Every signal is computed from candles up to and including D's close ONLY.
+    We slice each symbol's history at D and call the live scoring function on
+    that slice — it physically cannot see future bars.
+  • Decisions made at D's close are FILLED AT THE NEXT BAR'S OPEN (D+1), never
+    at the close we just looked at. You cannot trade on a price you haven't
+    seen print yet.
+  • A position opened/closed at D+1's open is only marked-to-market from D+1
+    onward — never retroactively into D.
+
+Because the MACD/EMA/SMA indicators are causal (value at bar i depends only on
+bars ≤ i), slicing-then-scoring is identical to having scored live at that
+moment — but slicing makes the no-lookahead guarantee explicit and auditable.
+
+Costs: 0.05% slippage on every entry and exit; fills at the next bar's open.
+
+Read-only: this NEVER writes to the live trades database. All results live in
+memory and are exposed via get_status().
+────────────────────────────────────────────────────────────────────────────
+"""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+import traceback
+from bisect import bisect_left, bisect_right
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+
+import config
+import market_data
+import strategies
+
+# ── Constants ─────────────────────────────────────────────────────────────
+SLIPPAGE        = 0.0005     # 0.05% on entry and exit
+_WARMUP_DAYS    = 160        # calendar days of history fetched before the start
+_HOURLY_WINDOW  = 300        # trailing hourly bars used for the 1H entry signal
+
+# ── Run state (single backtest at a time) ─────────────────────────────────
+_state: dict = {
+    "status":     "idle",   # idle | fetching | running | done | error
+    "progress":   0.0,      # 0.0 .. 1.0
+    "message":    "",
+    "mode":       "",
+    "params":     None,
+    "result":     None,     # metrics dict when status == done
+    "error":      None,
+    "started_at": None,
+    "finished_at": None,
+}
+_state_lock = threading.Lock()
+
+
+def _set(**kw) -> None:
+    with _state_lock:
+        _state.update(kw)
+
+
+def get_status() -> dict:
+    """Thread-safe snapshot of the current/last backtest run."""
+    with _state_lock:
+        return dict(_state)
+
+
+def is_running() -> bool:
+    with _state_lock:
+        return _state["status"] in ("fetching", "running")
+
+
+# ── Public entry point ────────────────────────────────────────────────────
+
+def start(start_date: str, end_date: str, capital: float, mode: str,
+          symbols: list[str] | None = None) -> bool:
+    """Kick off a backtest in a background thread. Returns False if one is
+    already running."""
+    if is_running():
+        return False
+    syms = symbols or [s for s in config.SYMBOLS if s != "SPY"]
+    _set(status="fetching", progress=0.0, message="Starting…", mode=mode,
+         result=None, error=None, started_at=time.time(), finished_at=None,
+         params={"start": start_date, "end": end_date, "capital": capital,
+                 "mode": mode, "symbols": syms})
+    threading.Thread(
+        target=_run, name="backtest",
+        args=(start_date, end_date, float(capital), mode, syms),
+        daemon=True,
+    ).start()
+    return True
+
+
+# ── Data loading ──────────────────────────────────────────────────────────
+
+class _Series:
+    """A symbol's daily (and optional hourly) history with fast date lookups."""
+    def __init__(self, df: pd.DataFrame):
+        self.df    = df.reset_index(drop=True)
+        # date (python date) of each bar, ascending — for bisect lookups
+        self.dates = [ts.date() for ts in self.df["datetime"]]
+        self.open  = self.df["open"].tolist()
+        self.close = self.df["close"].tolist()
+
+    def slice_through(self, d: date) -> pd.DataFrame | None:
+        """All bars with date <= d (point-in-time view)."""
+        i = bisect_right(self.dates, d) - 1
+        return self.df.iloc[: i + 1] if i >= 0 else None
+
+    def open_on(self, d: date) -> float | None:
+        """Open price of the bar exactly on date d, else None."""
+        i = bisect_left(self.dates, d)
+        if i < len(self.dates) and self.dates[i] == d:
+            return float(self.open[i])
+        return None
+
+    def close_asof(self, d: date) -> float | None:
+        """Most recent close at or before date d (carried forward over gaps)."""
+        i = bisect_right(self.dates, d) - 1
+        return float(self.close[i]) if i >= 0 else None
+
+
+class _HourlySeries:
+    """Hourly bars for the 1H entry signal, bounded to a trailing window."""
+    def __init__(self, df: pd.DataFrame):
+        self.df    = df.reset_index(drop=True)
+        self.dates = [ts.date() for ts in self.df["datetime"]]
+
+    def slice_through(self, d: date) -> pd.DataFrame | None:
+        """Trailing window of hourly bars with date <= d (point-in-time)."""
+        i = bisect_right(self.dates, d) - 1
+        if i < 0:
+            return None
+        lo = max(0, i + 1 - _HOURLY_WINDOW)
+        return self.df.iloc[lo: i + 1]
+
+
+# ── The simulation ────────────────────────────────────────────────────────
+
+def _run(start_date: str, end_date: str, capital: float, mode: str,
+         symbols: list[str]) -> None:
+    try:
+        fetch_start = (datetime.strptime(start_date, "%Y-%m-%d").date()
+                       - timedelta(days=_WARMUP_DAYS)).isoformat()
+        user_start  = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end         = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+        # SPY drives the trading calendar and the regime filter.
+        all_syms = list(dict.fromkeys(symbols + ["SPY"]))
+        hourly   = (mode == "hourly")
+
+        # Total fetch units for progress (daily for all; hourly for tradables).
+        total_fetch = len(all_syms) + (len(symbols) if hourly else 0)
+        done_fetch  = 0
+
+        daily:  dict[str, _Series]       = {}
+        hourly_data: dict[str, _HourlySeries] = {}
+
+        for sym in all_syms:
+            _set(message=f"Fetching {sym} daily…",
+                 progress=0.45 * done_fetch / max(total_fetch, 1))
+            df = market_data.fetch_history(sym, "day", fetch_start, end_date)
+            done_fetch += 1
+            if df is not None and len(df):
+                daily[sym] = _Series(df)
+
+        if hourly:
+            for sym in symbols:
+                _set(message=f"Fetching {sym} hourly…",
+                     progress=0.45 * done_fetch / max(total_fetch, 1))
+                dfh = market_data.fetch_history(sym, "hour", fetch_start, end_date)
+                done_fetch += 1
+                if dfh is not None and len(dfh):
+                    hourly_data[sym] = _HourlySeries(dfh)
+
+        if "SPY" not in daily:
+            _set(status="error", error="No SPY data returned — cannot run backtest.",
+                 finished_at=time.time())
+            return
+
+        spy = daily["SPY"]
+        # Master calendar: SPY trading days within the requested window.
+        calendar = [d for d in spy.dates if user_start <= d <= end]
+        # Need a previous bar to fill against, and 50 SPY bars for the regime.
+        if len(calendar) < 2:
+            _set(status="error", error="Date range too short / no trading days.",
+                 finished_at=time.time())
+            return
+
+        tradables = [s for s in symbols if s in daily]
+
+        # ---- Simulation state ----
+        balance   = capital
+        positions: dict[str, dict] = {}
+        trades:    list[dict]      = []      # closed round-trips
+        equity_curve: list[dict]   = []
+        pending_exits:  list[tuple[str, str]] = []   # (symbol, action) → fill next open
+        pending_entries: list[dict]           = []   # score dicts → fill next open
+
+        def _open_position(sym: str, fill_open: float, fdate: date, regime: str) -> None:
+            nonlocal balance
+            entry_px = fill_open * (1 + SLIPPAGE)
+            size_usd = strategies.position_size_usd(balance, regime)
+            if entry_px <= 0 or size_usd <= 0 or size_usd > balance:
+                return
+            shares = size_usd / entry_px
+            balance -= size_usd
+            positions[sym] = {
+                "shares":           shares,
+                "entry_price":      entry_px,
+                "highest_price":    entry_px,
+                "size_usd":         size_usd,
+                "entry_date":       fdate.isoformat(),
+                "breakeven_active": False,
+            }
+
+        def _close_position(sym: str, fill_open: float, fdate: date, action: str) -> None:
+            nonlocal balance
+            pos = positions.pop(sym, None)
+            if pos is None:
+                return
+            exit_px  = fill_open * (1 - SLIPPAGE)
+            pnl      = (exit_px - pos["entry_price"]) * pos["shares"]
+            balance += pos["shares"] * exit_px
+            entry_d  = date.fromisoformat(pos["entry_date"])
+            trades.append({
+                "symbol":      sym,
+                "sector":      config.SECTOR_MAP.get(sym, "Other"),
+                "entry_date":  pos["entry_date"],
+                "entry_price": round(pos["entry_price"], 4),
+                "exit_date":   fdate.isoformat(),
+                "exit_price":  round(exit_px, 4),
+                "shares":      round(pos["shares"], 6),
+                "pnl":         round(pnl, 2),
+                "pnl_pct":     round((exit_px / pos["entry_price"] - 1) * 100, 2),
+                "exit_reason": action,
+                "hold_days":   strategies.count_trading_days(entry_d, fdate),
+            })
+
+        last_idx = len(calendar) - 1
+        for i, D in enumerate(calendar):
+            if i % 10 == 0:
+                _set(status="running", progress=0.45 + 0.5 * i / len(calendar),
+                     message=f"Simulating {D.isoformat()} — equity ${balance:,.0f}, "
+                             f"{len(positions)} open, {len(trades)} trades")
+
+            # 1) Execute decisions made yesterday at TODAY's open (next-bar fill).
+            for sym, action in pending_exits:
+                px = daily[sym].open_on(D) if sym in daily else None
+                if px is not None and sym in positions:
+                    _close_position(sym, px, D, action)
+            regime_for_fill = (pending_entries[0]["_regime"] if pending_entries else "NEUTRAL")
+            for opp in pending_entries:
+                sym = opp["symbol"]
+                if len(positions) >= config.MAX_POSITIONS:
+                    break
+                if sym in positions or strategies.sector_blocked(sym, positions.keys()):
+                    continue
+                px = daily[sym].open_on(D) if sym in daily else None
+                if px is not None and px > 0:
+                    _open_position(sym, px, D, opp["_regime"])
+            pending_exits, pending_entries = [], []
+
+            # 2) Mark-to-market at TODAY's close.
+            pos_val = sum(p["shares"] * (daily[s].close_asof(D) or p["entry_price"])
+                          for s, p in positions.items())
+            equity_curve.append({"date": D.isoformat(), "equity": round(balance + pos_val, 2)})
+
+            # On the final bar there is no next open to fill against — stop deciding.
+            if i == last_idx:
+                break
+
+            # 3) Decide at TODAY's close, using data up to and including D only.
+            spy_sl = spy.slice_through(D)
+            regime = strategies.spy_regime(spy_sl)["regime"]
+
+            scores: dict[str, dict] = {}
+            for sym in tradables:
+                d_sl = daily[sym].slice_through(D)
+                if hourly:
+                    h_sl = hourly_data[sym].slice_through(D) if sym in hourly_data else None
+                else:
+                    h_sl = d_sl   # daily-only: trend AND entry both on daily
+                rs = strategies.relative_strength(d_sl, spy_sl)
+                scores[sym] = strategies.score_symbol(sym, d_sl, h_sl, rs, earnings_soon=False)
+
+            # Exits: trailing/BE/TP (shared), then time-exit, then bearish signal.
+            for sym in list(positions.keys()):
+                c = daily[sym].close_asof(D)
+                if c is None:
+                    continue
+                pos    = positions[sym]
+                action = strategies.manage_position(pos, c)
+                if action is None:
+                    hold = strategies.count_trading_days(date.fromisoformat(pos["entry_date"]), D)
+                    if hold >= config.MAX_HOLD_DAYS:
+                        action = "TIME EXIT"
+                if action is None and scores.get(sym, {}).get("signal") == -1:
+                    action = "SELL"
+                if action:
+                    pending_exits.append((sym, action))
+
+            # Entries: BUY signal, score gate (regime-aware), best score first.
+            min_score = strategies.min_score_for_regime(regime)
+            buys = sorted(
+                (scores[s] for s in tradables
+                 if scores[s]["signal"] == 1
+                 and not scores[s]["earnings_soon"]
+                 and scores[s]["score"] >= min_score),
+                key=lambda r: r["score"], reverse=True,
+            )
+            for opp in buys:
+                opp["_regime"] = regime
+                pending_entries.append(opp)
+
+        # Force-close anything still open at the final close, for clean accounting.
+        final_date = calendar[last_idx]
+        for sym in list(positions.keys()):
+            px = daily[sym].close_asof(final_date)
+            if px is not None:
+                _close_position(sym, px, final_date, "END OF TEST")
+        pos_val = 0.0  # all closed
+        equity_curve[-1]["equity"] = round(balance, 2)
+
+        result = _metrics(capital, balance, equity_curve, trades, mode, symbols,
+                          start_date, end_date, hourly_data)
+        _set(status="done", progress=1.0, result=result, finished_at=time.time(),
+             message=f"Done — {len(trades)} trades, "
+                     f"{result['total_return_pct']:+.1f}% return")
+
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        _set(status="error", error=f"{type(exc).__name__}: {exc}",
+             finished_at=time.time())
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────
+
+def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
+             trades: list[dict], mode: str, symbols: list[str],
+             start_date: str, end_date: str,
+             hourly_data: dict) -> dict:
+    final_equity = equity_curve[-1]["equity"] if equity_curve else final_balance
+    total_return = (final_equity / initial - 1) * 100 if initial else 0.0
+
+    wins   = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    gross_wins   = sum(t["pnl"] for t in wins)
+    gross_losses = abs(sum(t["pnl"] for t in losses))
+    total_pnl    = sum(t["pnl"] for t in trades)
+
+    avg_win  = gross_wins / len(wins)     if wins   else 0.0
+    avg_loss = gross_losses / len(losses) if losses else 0.0
+    win_rate = len(wins) / len(trades) * 100 if trades else 0.0
+    profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else (
+        float("inf") if gross_wins > 0 else 0.0)
+    expectancy = total_pnl / len(trades) if trades else 0.0
+
+    # Max drawdown + drawdown curve from the equity curve.
+    peak = initial
+    max_dd = 0.0
+    dd_curve: list[dict] = []
+    for pt in equity_curve:
+        eq = pt["equity"]
+        peak = max(peak, eq)
+        dd = (eq / peak - 1) * 100 if peak else 0.0
+        max_dd = min(max_dd, dd)
+        dd_curve.append({"date": pt["date"], "drawdown": round(dd, 2)})
+
+    # Annualised Sharpe from daily equity returns (risk-free = 0).
+    eqs = [pt["equity"] for pt in equity_curve]
+    rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs)) if eqs[i - 1] > 0]
+    sharpe = 0.0
+    if len(rets) > 1:
+        mean = sum(rets) / len(rets)
+        var  = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        std  = math.sqrt(var)
+        if std > 0:
+            sharpe = mean / std * math.sqrt(252)
+
+    # Per-symbol breakdown.
+    by_symbol: dict[str, dict] = {}
+    for t in trades:
+        b = by_symbol.setdefault(t["symbol"], {"symbol": t["symbol"], "trades": 0,
+                                               "wins": 0, "pnl": 0.0})
+        b["trades"] += 1
+        b["wins"]   += 1 if t["pnl"] > 0 else 0
+        b["pnl"]     = round(b["pnl"] + t["pnl"], 2)
+    by_symbol_list = sorted(
+        [{**b, "win_rate": round(b["wins"] / b["trades"] * 100, 1)}
+         for b in by_symbol.values()],
+        key=lambda x: x["pnl"], reverse=True,
+    )
+
+    best  = max(trades, key=lambda t: t["pnl"], default=None)
+    worst = min(trades, key=lambda t: t["pnl"], default=None)
+
+    mode_label = (
+        "1H entry + 1D trend (multi-timeframe)" if mode == "hourly"
+        else "DAILY-ONLY (trend AND entry on daily candles)"
+    )
+
+    return {
+        "label":            "BACKTEST — Simulated, not live trades",
+        "mode":             mode,
+        "mode_label":       mode_label,
+        "start_date":       start_date,
+        "end_date":         end_date,
+        "symbols":          symbols,
+        "initial_balance":  round(initial, 2),
+        "final_equity":     round(final_equity, 2),
+        "total_return_pct": round(total_return, 2),
+        "total_trades":     len(trades),
+        "win_rate":         round(win_rate, 1),
+        "profit_factor":    (round(profit_factor, 2) if profit_factor != float("inf") else None),
+        "avg_win":          round(avg_win, 2),
+        "avg_loss":         round(avg_loss, 2),
+        "expectancy":       round(expectancy, 2),
+        "gross_wins":       round(gross_wins, 2),
+        "gross_losses":     round(gross_losses, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "sharpe":           round(sharpe, 2),
+        "by_symbol":        by_symbol_list,
+        "best_trade":       best,
+        "worst_trade":      worst,
+        "equity_curve":     equity_curve,
+        "drawdown_curve":   dd_curve,
+        "trades":           trades,
+        "slippage_pct":     SLIPPAGE * 100,
+    }

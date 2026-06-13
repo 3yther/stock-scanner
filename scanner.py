@@ -33,90 +33,23 @@ class Scanner:
     def _score_symbol(self, symbol: str, spy_regime: dict) -> dict:
         print(f"  [SCANNER] scoring {symbol}…", flush=True)
         df_d, df_h = market_data.get_ohlc(symbol)
-
-        if df_d is None or len(df_d) < 26:
-            print(f"  [SCANNER] {symbol} → no_data (df_d rows={len(df_d) if df_d is not None else 'None'})", flush=True)
-            return self._base_result(symbol)
-
-        cross_d, bullish_d = strategies.macd_state(df_d)
-        cross_h, bullish_h = 0, False
-        if df_h is not None and len(df_h) >= 26:
-            cross_h, bullish_h = strategies.macd_state(df_h)
-
-        avg_vol    = df_d["volume"].rolling(20).mean().iloc[-1]
-        cur_vol    = float(df_d["volume"].iloc[-1])
-        vol_ratio  = (cur_vol / avg_vol) if avg_vol > 0 else 1.0
-        price      = float(df_d["close"].iloc[-1])
-        prev       = float(df_d["close"].iloc[-2]) if len(df_d) > 1 else price
-        change_pct = (price - prev) / prev * 100 if prev else 0.0
-
-        # Trend (40 pts)
-        trend_pts = 40.0 if bullish_d else 0.0
-
-        # Entry signal (25 pts)
-        if cross_h == 1 and bullish_h:
-            signal_pts = 25.0
-        elif bullish_h:
-            signal_pts = 12.0
-        else:
-            signal_pts = 0.0
-
-        # Volume (20 pts, tiered)
-        if   vol_ratio >= 2.0: vol_pts = 20.0
-        elif vol_ratio >= 1.5: vol_pts = 15.0
-        elif vol_ratio >= 1.2: vol_pts = 10.0
-        elif vol_ratio >= 1.0: vol_pts = 5.0
-        else:                  vol_pts = 0.0
-
-        # Relative strength vs SPY (15 pts)
-        rs = market_data.get_relative_strength(symbol)
-        if   rs > 3.0: rs_pts = 15.0
-        elif rs > 1.0: rs_pts = 10.0
-        elif rs > 0.0: rs_pts = 5.0
-        else:          rs_pts = 0.0
-
-        score = trend_pts + signal_pts + vol_pts + rs_pts
-
+        rs            = market_data.get_relative_strength(symbol)
         earnings_soon = market_data.get_earnings_flag(symbol)
 
-        if bullish_d and cross_h == 1 and vol_ratio >= config.MIN_VOL_RATIO and not earnings_soon:
-            signal = 1
-        elif cross_h == -1 or not bullish_d:
-            signal = -1
+        # Single source of truth — the backtester calls this exact function.
+        res = strategies.score_symbol(symbol, df_d, df_h, rs, earnings_soon)
+
+        if res["no_data"]:
+            rows = len(df_d) if df_d is not None else "None"
+            print(f"  [SCANNER] {symbol} → no_data (df_d rows={rows})", flush=True)
         else:
-            signal = 0
-
-        if earnings_soon and signal == 1:
-            signal = 0
-
-        label = {1: "BUY", -1: "SELL", 0: "NEUTRAL"}[signal]
-
-        proximity_label = ""
-        if signal != 1:
-            if   score >= 65: proximity_label = "CLOSE"
-            elif score >= 50: proximity_label = "WATCHING"
-
-        print(
-            f"  [SCANNER] {symbol} → signal={label} score={score:.0f}"
-            f"  trend={'↑' if bullish_d else '↓'} vol={vol_ratio:.1f}x rs={rs:+.1f}%",
-            flush=True,
-        )
-        return {
-            "symbol":          symbol,
-            "sector":          config.SECTOR_MAP.get(symbol, "Other"),
-            "price":           round(price, 2),
-            "change_pct":      round(change_pct, 2),
-            "signal":          signal,
-            "signal_label":    label,
-            "score":           round(score, 1),
-            "trend_bullish":   bullish_d,
-            "entry_cross":     cross_h,
-            "vol_ratio":       round(vol_ratio, 2),
-            "rs":              rs,
-            "earnings_soon":   earnings_soon,
-            "proximity_label": proximity_label,
-            "no_data":         False,
-        }
+            print(
+                f"  [SCANNER] {symbol} → signal={res['signal_label']} score={res['score']:.0f}"
+                f"  trend={'↑' if res['trend_bullish'] else '↓'}"
+                f" vol={res['vol_ratio']:.1f}x rs={res['rs']:+.1f}%",
+                flush=True,
+            )
+        return res
 
     # ------------------------------------------------------------------ #
     #  Full scan                                                           #
@@ -180,22 +113,7 @@ class Scanner:
 
     @staticmethod
     def _base_result(symbol: str) -> dict:
-        return {
-            "symbol":          symbol,
-            "sector":          config.SECTOR_MAP.get(symbol, "Other"),
-            "price":           0.0,
-            "change_pct":      0.0,
-            "signal":          0,
-            "signal_label":    "NEUTRAL",
-            "score":           0.0,
-            "trend_bullish":   False,
-            "entry_cross":     0,
-            "vol_ratio":       1.0,
-            "rs":              0.0,
-            "earnings_soon":   False,
-            "proximity_label": "",
-            "no_data":         True,
-        }
+        return strategies.base_result(symbol)
 
     # ------------------------------------------------------------------ #
     #  Thread                                                              #

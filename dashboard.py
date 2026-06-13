@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 import requests as _http
 from flask import Flask, jsonify, render_template, request
 
+import backtest
 import config
 import database as db
 import market_data
@@ -41,6 +42,46 @@ def index():
 @app.route("/stats")
 def stats_page():
     return render_template("stats.html")
+
+
+@app.route("/backtest")
+def backtest_page():
+    return render_template("backtest.html")
+
+
+@app.route("/api/backtest_run", methods=["POST"])
+def api_backtest_run():
+    """Kick off a read-only historical backtest in a background thread.
+
+    Never writes to the live trades DB — results live in memory only.
+    """
+    body = request.get_json(force=True) or {}
+
+    today = datetime.now(timezone.utc).date()
+    default_start = (today - timedelta(days=730)).isoformat()
+    start_date = (body.get("start") or default_start)[:10]
+    end_date   = (body.get("end")   or today.isoformat())[:10]
+    mode       = "hourly" if body.get("mode") == "hourly" else "daily"
+    try:
+        capital = float(body.get("capital", config.INITIAL_BALANCE))
+    except (TypeError, ValueError):
+        capital = config.INITIAL_BALANCE
+    if capital <= 0:
+        capital = config.INITIAL_BALANCE
+
+    if backtest.is_running():
+        return jsonify({"started": False, "reason": "A backtest is already running"}), 409
+
+    started = backtest.start(start_date, end_date, capital, mode)
+    print(f"[BACKTEST] run requested: {start_date}→{end_date} ${capital} mode={mode} started={started}", flush=True)
+    return jsonify({"started": started, "start": start_date, "end": end_date,
+                    "capital": capital, "mode": mode})
+
+
+@app.route("/api/backtest_status")
+def api_backtest_status():
+    """Progress + results for the current/last backtest (polled by /backtest)."""
+    return jsonify(backtest.get_status())
 
 
 @app.route("/api/status")

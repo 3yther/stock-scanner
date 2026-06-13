@@ -18,6 +18,7 @@ import config
 import database as db
 import market_data
 import notifier
+import strategies
 
 # Printed at import time — confirms which DB the trader module sees
 print(
@@ -130,12 +131,7 @@ class StockPaperTrader:
     @staticmethod
     def _count_trading_days(start: date, end: date) -> int:
         """Count Mon-Fri days strictly between start and end (exclusive of start)."""
-        days, cur = 0, start
-        while cur < end:
-            cur += timedelta(days=1)
-            if cur.weekday() < 5:
-                days += 1
-        return days
+        return strategies.count_trading_days(start, end)
 
     # ------------------------------------------------------------------ #
     #  Trade execution                                                     #
@@ -149,20 +145,14 @@ class StockPaperTrader:
         if price <= 0:
             return
 
-        # Sector diversification: only one position per sector
-        sym_sector = config.SECTOR_MAP.get(symbol, "Other")
-        if sym_sector != "ETF":
-            held_sectors = {config.SECTOR_MAP.get(s, "Other") for s in self.positions}
-            if sym_sector in held_sectors:
-                print(f"  [TRADER] Skip {symbol} — sector '{sym_sector}' already held")
-                return
+        # Sector diversification: only one position per sector (shared rule)
+        if strategies.sector_blocked(symbol, self.positions.keys()):
+            sym_sector = config.SECTOR_MAP.get(symbol, "Other")
+            print(f"  [TRADER] Skip {symbol} — sector '{sym_sector}' already held")
+            return
 
-        # Halve position size in bear regime
-        size_pct = config.TRADE_SIZE_PCT
-        if regime == "BEARISH":
-            size_pct *= config.BEAR_POSITION_SCALE
-
-        size_usd = self.balance * size_pct
+        # Position size (halved in bear regime) — shared rule
+        size_usd = strategies.position_size_usd(self.balance, regime)
         if size_usd > self.balance:
             return
         shares        = size_usd / price
@@ -261,35 +251,17 @@ class StockPaperTrader:
                 continue
             pos = self.positions[sym]
 
-            # Update high watermark
-            if price > pos["highest_price"]:
-                pos["highest_price"] = price
-
-            # Break-even stop: once up BREAKEVEN_TRIGGER %, lock SL at entry
-            upnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
-            if upnl_pct >= config.BREAKEVEN_TRIGGER and not pos["breakeven_active"]:
-                pos["breakeven_active"] = True
+            # Shared trailing-stop / break-even / take-profit rule. Mutates pos.
+            be_before = pos["breakeven_active"]
+            action    = strategies.manage_position(pos, price)
+            if not be_before and pos["breakeven_active"]:
                 print(
                     f"  [PAPER] BE STOP  {sym:<6} — SL locked at entry"
                     f" ${pos['entry_price']:,.2f}"
                 )
 
-            # Effective trailing stop (BE takes priority as a floor)
-            trail_sl = pos["highest_price"] * (1 - config.STOP_LOSS_PCT)
-            if pos["breakeven_active"]:
-                trail_sl = max(trail_sl, pos["entry_price"])
-
-            tp_price = pos["entry_price"] * (1 + config.TAKE_PROFIT_PCT)
-
-            if price <= trail_sl:
-                action = (
-                    "BREAK-EVEN STOP"
-                    if pos["breakeven_active"] and price <= pos["entry_price"]
-                    else "TRAILING STOP"
-                )
+            if action:
                 self._close_position(sym, price, action)
-            elif price >= tp_price:
-                self._close_position(sym, price, "TAKE PROFIT")
             else:
                 # Time-based exit after MAX_HOLD_DAYS trading days
                 entry_date = date.fromisoformat(pos["entry_date"])
@@ -308,11 +280,8 @@ class StockPaperTrader:
                 if price:
                     self._close_position(sym, price, "SELL")
 
-        # Min score threshold based on regime
-        min_score = (
-            config.MIN_SCORE_BEAR if regime == "BEARISH"
-            else config.MIN_SCORE_BULL
-        )
+        # Min score threshold based on regime (shared rule)
+        min_score = strategies.min_score_for_regime(regime)
 
         # Top BUY candidates filtered by score, earnings, sector
         top_buys = [
