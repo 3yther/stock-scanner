@@ -272,3 +272,151 @@ def manage_position(pos: dict, price: float) -> str | None:
     if price >= tp_price:
         return "TAKE PROFIT"
     return None
+
+
+# ── Shared trend helper ───────────────────────────────────────────────────
+
+def trend_up_sma(df: pd.DataFrame | None, period: int = 50) -> bool:
+    """True if the latest close is above its `period`-day SMA (causal). The same
+    'above SMA50' trend concept the regime filter uses, applied per symbol."""
+    if df is None or len(df) < period:
+        return False
+    sma = float(df["close"].rolling(period).mean().iloc[-1])
+    return float(df["close"].iloc[-1]) > sma > 0
+
+
+def make_result(symbol: str, *, signal: int = 0, score: float = 0.0,
+                price: float = 0.0, change_pct: float = 0.0,
+                earnings_soon: bool = False, no_data: bool = False,
+                **extra) -> dict:
+    """Build a result dict in the standard shape every strategy returns, so the
+    backtester / scanner can consume any strategy's output the same way."""
+    d = {
+        "symbol":          symbol,
+        "sector":          config.SECTOR_MAP.get(symbol, "Other"),
+        "price":           round(price, 2),
+        "change_pct":      round(change_pct, 2),
+        "signal":          signal,
+        "signal_label":    {1: "BUY", -1: "SELL", 0: "NEUTRAL"}[signal],
+        "score":           round(score, 1),
+        "trend_bullish":   False,
+        "entry_cross":     0,
+        "vol_ratio":       1.0,
+        "rs":              0.0,
+        "earnings_soon":   earnings_soon,
+        "proximity_label": "",
+        "no_data":         no_data,
+    }
+    d.update(extra)
+    return d
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  STRATEGY INTERFACE + REGISTRY
+#
+#  Each strategy turns a point-in-time view of one symbol into a signal dict.
+#  Entry admission is overridable, but ALL strategies share the same risk core
+#  (position_size_usd / sector_blocked / manage_position / max-hold / max-
+#  positions) — they only differ in HOW they decide to enter. The backtester
+#  fills at the next bar's open for every strategy, so the no-lookahead
+#  guarantee holds regardless of which one is selected.
+# ══════════════════════════════════════════════════════════════════════════
+
+class Strategy:
+    """Base interface. A strategy is stateless: given candles up to *now* it
+    returns a BUY/HOLD/SELL signal + a 0–100 score."""
+    name        = "base"
+    label       = "Base"
+    description = ""
+
+    def generate_signal(self, symbol: str, df_d: pd.DataFrame | None,
+                        df_h: pd.DataFrame | None, df_spy: pd.DataFrame | None,
+                        rs: float = 0.0, earnings_soon: bool = False) -> dict:
+        raise NotImplementedError
+
+    def entry_admits(self, result: dict, regime: str) -> bool:
+        """Whether a scored symbol may open a position now. Default: a BUY
+        signal, not near earnings, clearing the regime-aware score gate."""
+        return (result.get("signal") == 1
+                and not result.get("earnings_soon")
+                and result.get("score", 0.0) >= min_score_for_regime(regime))
+
+
+class MacdMtfStrategy(Strategy):
+    """The live strategy: 1D MACD trend + 1H MACD entry cross, scored on volume
+    and relative strength. Thin wrapper over score_symbol — behaviour unchanged."""
+    name        = "macd_mtf"
+    label       = "MACD Multi-Timeframe"
+    description = ("1D MACD trend filter + 1H MACD entry cross, scored on volume "
+                   "and relative strength vs SPY. This is the live strategy.")
+
+    def generate_signal(self, symbol, df_d, df_h, df_spy, rs=0.0, earnings_soon=False):
+        return score_symbol(symbol, df_d, df_h, rs, earnings_soon)
+
+
+class LiquiditySweepStrategy(Strategy):
+    """Mechanical liquidity-sweep reversal on daily candles.
+
+    Long when today's LOW dips below the lowest low of the previous N days (the
+    sweep) but today's CLOSE finishes back above that prior low (the sweep
+    failed → reversal), with a bullish close for confirmation, and only while
+    the symbol's daily trend is up (close > SMA50). All risk/exit rules are the
+    shared core — no new risk logic here.
+    """
+    name        = "liquidity_sweep"
+    label       = "Liquidity Sweep Reversal"
+    description = ("Long when today sweeps below the prior {N}-day low then "
+                   "closes back above it (failed breakdown), with a bullish "
+                   "close, while price is above its SMA50.")
+
+    def __init__(self, lookback: int = 10, require_bullish_close: bool = True):
+        self.lookback = lookback
+        self.require_bullish_close = require_bullish_close
+        self.description = self.description.replace("{N}", str(lookback))
+
+    def generate_signal(self, symbol, df_d, df_h, df_spy, rs=0.0, earnings_soon=False):
+        n = self.lookback
+        # Need N prior bars for the sweep level and 50 for the SMA trend filter.
+        if df_d is None or len(df_d) < max(n + 1, 50):
+            return make_result(symbol, no_data=True)
+
+        lows        = df_d["low"]
+        prior_low   = float(lows.iloc[-(n + 1):-1].min())   # previous N lows, EXCLUDING today
+        today_low   = float(lows.iloc[-1])
+        today_close = float(df_d["close"].iloc[-1])
+        today_open  = float(df_d["open"].iloc[-1])
+
+        trend_up      = trend_up_sma(df_d, 50)
+        swept         = today_low < prior_low                # dipped below the level
+        reclaimed     = today_close > prior_low              # but closed back above it
+        bullish_close = today_close > today_open
+        confirmed     = bullish_close or not self.require_bullish_close
+
+        if swept and reclaimed and trend_up and confirmed and not earnings_soon:
+            recov_pct = (today_close - prior_low) / prior_low * 100 if prior_low else 0.0
+            score = min(100.0, 85.0 + recov_pct)             # valid sweeps score 85–100
+            return make_result(symbol, signal=1, score=score, price=today_close,
+                               earnings_soon=earnings_soon, trend_bullish=trend_up,
+                               prior_low=round(prior_low, 2), swept=True)
+
+        return make_result(symbol, signal=0, score=0.0, price=today_close,
+                           earnings_soon=earnings_soon, trend_bullish=trend_up)
+
+
+# Registry — add new strategies here and they appear in the backtest selector.
+STRATEGIES: dict[str, Strategy] = {
+    MacdMtfStrategy().name:        MacdMtfStrategy(),
+    LiquiditySweepStrategy().name: LiquiditySweepStrategy(),
+}
+DEFAULT_STRATEGY = "macd_mtf"
+
+
+def get_strategy(name: str | None) -> Strategy:
+    """Look up a strategy by name, falling back to the default."""
+    return STRATEGIES.get(name or "", STRATEGIES[DEFAULT_STRATEGY])
+
+
+def strategy_list() -> list[dict]:
+    """[{name, label, description}] for the UI selector."""
+    return [{"name": s.name, "label": s.label, "description": s.description}
+            for s in STRATEGIES.values()]

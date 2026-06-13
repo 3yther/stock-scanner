@@ -99,26 +99,29 @@ def _annualised_sharpe(equity_curve: list[dict]) -> float:
 
 def start(start_date: str, end_date: str, capital: float, mode: str,
           split: str = "full", split_date: str | None = None,
-          symbols: list[str] | None = None) -> bool:
+          strategy: str = "macd_mtf", symbols: list[str] | None = None) -> bool:
     """Kick off a backtest in a background thread. Returns False if one is
     already running.
 
-    split : 'full' | 'train' | 'validation' — which slice of [start,end] to
-            simulate. split_date is the train/validation boundary (defaults to
-            60% of the way through the range if not given).
+    split    : 'full' | 'train' | 'validation' — which slice of [start,end] to
+               simulate. split_date is the train/validation boundary (defaults
+               to 60% of the way through the range if not given).
+    strategy : registry key in strategies.STRATEGIES (default 'macd_mtf').
     """
     if is_running():
         return False
     syms = symbols or [s for s in config.SYMBOLS if s != "SPY"]
     split = split if split in ("full", "train", "validation") else "full"
+    strat = strategies.get_strategy(strategy)   # resolve/validate now
     _set(status="fetching", progress=0.0, message="Starting…", mode=mode,
          result=None, error=None, started_at=time.time(), finished_at=None,
          params={"start": start_date, "end": end_date, "capital": capital,
                  "mode": mode, "split": split, "split_date": split_date,
-                 "symbols": syms})
+                 "strategy": strat.name, "symbols": syms})
     threading.Thread(
         target=_run, name="backtest",
-        args=(start_date, end_date, float(capital), mode, split, split_date, syms),
+        args=(start_date, end_date, float(capital), mode, split, split_date,
+              strat.name, syms),
         daemon=True,
     ).start()
     return True
@@ -171,8 +174,10 @@ class _HourlySeries:
 # ── The simulation ────────────────────────────────────────────────────────
 
 def _run(start_date: str, end_date: str, capital: float, mode: str,
-         split: str, split_date: str | None, symbols: list[str]) -> None:
+         split: str, split_date: str | None, strategy: str,
+         symbols: list[str]) -> None:
     try:
+        strat = strategies.get_strategy(strategy)
         user_start  = datetime.strptime(start_date, "%Y-%m-%d").date()
         end         = datetime.strptime(end_date, "%Y-%m-%d").date()
 
@@ -337,7 +342,9 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                 else:
                     h_sl = d_sl   # daily-only: trend AND entry both on daily
                 rs = strategies.relative_strength(d_sl, spy_sl)
-                scores[sym] = strategies.score_symbol(sym, d_sl, h_sl, rs, earnings_soon=False)
+                # Selected strategy turns this point-in-time view into a signal.
+                scores[sym] = strat.generate_signal(sym, d_sl, h_sl, spy_sl, rs,
+                                                    earnings_soon=False)
 
             # Exits: trailing/BE/TP (shared), then time-exit, then bearish signal.
             for sym in list(positions.keys()):
@@ -355,13 +362,10 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                 if action:
                     pending_exits.append((sym, action))
 
-            # Entries: BUY signal, score gate (regime-aware), best score first.
-            min_score = strategies.min_score_for_regime(regime)
+            # Entries: admitted by the strategy (default = BUY + regime-aware
+            # score gate), best score first.
             buys = sorted(
-                (scores[s] for s in tradables
-                 if scores[s]["signal"] == 1
-                 and not scores[s]["earnings_soon"]
-                 and scores[s]["score"] >= min_score),
+                (scores[s] for s in tradables if strat.entry_admits(scores[s], regime)),
                 key=lambda r: r["score"], reverse=True,
             )
             for opp in buys:
@@ -394,9 +398,10 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                           benchmark_curve=benchmark_curve, split=split,
                           split_date=split_dt.isoformat(),
                           sim_start=sim_start.isoformat(),
-                          sim_end=sim_end.isoformat())
+                          sim_end=sim_end.isoformat(),
+                          strategy=strat.name, strategy_label=strat.label)
         _set(status="done", progress=1.0, result=result, finished_at=time.time(),
-             message=f"Done [{split.upper()}] — {len(trades)} trades, "
+             message=f"Done [{strat.name} · {split.upper()}] — {len(trades)} trades, "
                      f"{result['total_return_pct']:+.1f}% return "
                      f"(SPY {result['benchmark']['return_pct']:+.1f}%)")
 
@@ -412,7 +417,8 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
              trades: list[dict], mode: str, symbols: list[str],
              start_date: str, end_date: str, hourly_data: dict,
              benchmark_curve: list[dict] | None = None, split: str = "full",
-             split_date: str = "", sim_start: str = "", sim_end: str = "") -> dict:
+             split_date: str = "", sim_start: str = "", sim_end: str = "",
+             strategy: str = "macd_mtf", strategy_label: str = "") -> dict:
     final_equity = equity_curve[-1]["equity"] if equity_curve else final_balance
     total_return = (final_equity / initial - 1) * 100 if initial else 0.0
 
@@ -491,6 +497,8 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
 
     return {
         "label":            "BACKTEST — Simulated, not live trades",
+        "strategy":         strategy,
+        "strategy_label":   strategy_label,
         "mode":             mode,
         "mode_label":       mode_label,
         "split":            split,

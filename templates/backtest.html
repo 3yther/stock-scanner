@@ -169,6 +169,10 @@
     <div class="card-hdr">Run a Backtest</div>
     <div class="form-row">
       <div class="field">
+        <label>Strategy</label>
+        <select id="f-strategy"><option value="macd_mtf">MACD Multi-Timeframe</option></select>
+      </div>
+      <div class="field">
         <label>Start date</label>
         <input type="date" id="f-start">
       </div>
@@ -203,6 +207,7 @@
         <button class="btn" id="run-btn">Run Backtest</button>
       </div>
     </div>
+    <div class="hint" id="strat-desc" style="padding-top:0;color:var(--blue)"></div>
     <div class="hint">
       <strong style="color:var(--text)">Tune your strategy on TRAIN. Confirm it still works on VALIDATION.</strong>
       If it works on TRAIN but fails on VALIDATION, it was overfitting.<br>
@@ -259,6 +264,7 @@
     </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+      <span class="pill" id="r-strategy" style="background:rgba(188,140,255,.15);color:var(--purple);border-color:rgba(188,140,255,.4)">strategy</span>
       <span class="pill" id="r-mode">mode</span>
       <span class="pill" id="r-range">range</span>
       <span class="pill" id="r-slip">slippage</span>
@@ -404,6 +410,29 @@ const CHART_DEFAULTS = {
   $('f-start').value = two.toISOString().slice(0,10);
 })();
 
+// ---- populate strategy selector from the registry ----
+let STRATS = {};
+(async function(){
+  try {
+    const s = await (await fetch('/api/strategies')).json();
+    const sel = $('f-strategy');
+    sel.innerHTML = '';
+    (s.strategies||[]).forEach(st=>{
+      STRATS[st.name] = st;
+      const o = document.createElement('option');
+      o.value = st.name; o.textContent = st.label;
+      if(st.name===s.default) o.selected = true;
+      sel.appendChild(o);
+    });
+    updateStratDesc();
+  } catch(e){ console.error('strategies:', e); }
+})();
+function updateStratDesc(){
+  const st = STRATS[$('f-strategy').value];
+  $('strat-desc').textContent = st ? st.description : '';
+}
+$('f-strategy').addEventListener('change', updateStratDesc);
+
 // ---- run ----
 $('run-btn').addEventListener('click', async () => {
   $('error-box').style.display='none';
@@ -412,6 +441,7 @@ $('run-btn').addEventListener('click', async () => {
     start: $('f-start').value, end: $('f-end').value,
     capital: parseFloat($('f-capital').value)||1000, mode: $('f-mode').value,
     split: $('f-split').value, split_date: $('f-split-date').value || null,
+    strategy: $('f-strategy').value,
   };
   $('run-btn').disabled = true;
   try {
@@ -468,6 +498,7 @@ function render(r){
   if(r.beat_benchmark){ verdict.textContent='✓ STRATEGY BEAT SPY'; verdict.style.background='rgba(63,185,80,.15)'; verdict.style.color='var(--green)'; }
   else { verdict.textContent='✗ LOST TO BUY & HOLD'; verdict.style.background='rgba(248,81,73,.15)'; verdict.style.color='var(--red)'; }
 
+  $('r-strategy').textContent = '🧠 ' + (r.strategy_label || r.strategy || 'strategy');
   $('r-mode').textContent = r.mode_label;
   $('r-range').textContent = r.start_date+' → '+r.end_date;
   $('r-slip').textContent = 'slippage '+r.slippage_pct+'% · fills next open';
