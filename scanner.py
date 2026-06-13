@@ -217,7 +217,13 @@ class Scanner:
         scan_num = 0
         while self._running:
             scan_num += 1
-            print(f"\n  [SCANNER] ===== SCAN #{scan_num} START =====", flush=True)
+
+            # Cadence depends on whether the market is open.
+            market_open = self._market_open()
+            interval    = config.SCAN_INTERVAL_OPEN if market_open else config.SCAN_INTERVAL_CLOSED
+            mode        = "OPEN" if market_open else "CLOSED"
+            print(f"\n  [SCAN] market={mode}, next in {interval // 60}min", flush=True)
+            print(f"  [SCANNER] ===== SCAN #{scan_num} START =====", flush=True)
             try:
                 results, spy_regime = self.scan_all()
                 ts = time.time()
@@ -226,12 +232,25 @@ class Scanner:
                     self._regime       = spy_regime
                     self._last_scan_ts = ts
                 trader.update_scan(results, ts, spy_regime)
-                print(f"  [SCANNER] ===== SCAN #{scan_num} DONE — sleeping {config.SCAN_INTERVAL}s =====\n", flush=True)
+                print(f"  [SCANNER] ===== SCAN #{scan_num} DONE — sleeping {interval}s ({mode}) =====\n", flush=True)
             except Exception as e:
                 print(f"  [SCANNER] ===== SCAN #{scan_num} EXCEPTION =====", flush=True)
                 traceback.print_exc(file=sys.stdout)
                 sys.stdout.flush()
-            time.sleep(config.SCAN_INTERVAL)
+            time.sleep(interval)
+
+    @staticmethod
+    def _market_open() -> bool:
+        """True if US equities regular session is open right now (ET, Mon–Fri 9:30–16:00)."""
+        from datetime import datetime, timezone, timedelta
+        now_utc = datetime.now(timezone.utc)
+        et_off  = timedelta(hours=-4 if 3 <= now_utc.month <= 11 else -5)  # rough DST
+        et_now  = now_utc + et_off
+        if et_now.weekday() >= 5:
+            return False
+        open_t  = et_now.replace(hour=9,  minute=30, second=0, microsecond=0)
+        close_t = et_now.replace(hour=16, minute=0,  second=0, microsecond=0)
+        return open_t <= et_now <= close_t
 
     def get_results(self) -> list[dict]:
         with self._lock:

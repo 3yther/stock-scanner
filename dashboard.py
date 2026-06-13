@@ -115,6 +115,12 @@ def api_poly_status():
     return jsonify(market_data.poly_status())
 
 
+@app.route("/api/cache_status")
+def api_cache_status():
+    """Disk-cache snapshot — file path/size, per-symbol ages, calls today, hit rate."""
+    return jsonify(market_data.cache_status())
+
+
 @app.route("/api/kill-switch", methods=["GET", "POST"])
 def api_kill_switch():
     if request.method == "POST":

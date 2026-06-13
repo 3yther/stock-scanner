@@ -16,6 +16,7 @@ Hot path:  cache hit → no HTTP call → no lock contention → instant.
 """
 
 import collections
+import json
 import os
 import threading
 import time
@@ -37,6 +38,7 @@ _RETRY_WAIT      = 60.0         # seconds to wait after a 429
 _MAX_RETRIES     = 3
 _RATE_LIMIT      = 5            # max calls/minute on free tier
 _RATE_WINDOW     = 60.0         # rolling window for budget display
+_CACHE_FILE      = "/tmp/polygon_cache.json"   # disk cache survives restarts
 
 # ── Per-symbol cache ──────────────────────────────────────────────────────
 # Structure per symbol:
@@ -49,7 +51,10 @@ _rl_lock         = threading.Lock()                    # one HTTP call at a time
 _call_times: collections.deque = collections.deque()   # timestamps of recent calls
 _last_call_time: float = 0.0
 _cache_hits:    int    = 0
+_cache_misses:  int    = 0
 _total_requests: int   = 0
+_calls_today:   int    = 0
+_calls_today_date: str = ""   # UTC date the _calls_today counter belongs to
 
 
 # ── Date helpers ──────────────────────────────────────────────────────────
@@ -62,6 +67,29 @@ def _days_ago(n: int) -> str:
     return (datetime.utcnow() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
+def _fmt_age(age_s: float) -> str:
+    """Format an age in seconds as '2h 14m' or '18m'."""
+    age_s = max(0, int(age_s))
+    h, m = age_s // 3600, (age_s % 3600) // 60
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+# ── URL builders ──────────────────────────────────────────────────────────
+
+def _daily_url(symbol: str) -> str:
+    return (
+        f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/day"
+        f"/{_days_ago(_DAILY_DAYS)}/{_today()}"
+    )
+
+
+def _hourly_url(symbol: str) -> str:
+    return (
+        f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/hour"
+        f"/{_days_ago(_HOURLY_DAYS)}/{_today()}"
+    )
+
+
 # ── Core HTTP helper — rate-limited, retried ──────────────────────────────
 
 def _poly_get(path: str) -> dict | None:
@@ -71,7 +99,7 @@ def _poly_get(path: str) -> dict | None:
     Sleeps _INTER_REQ_SLEEP seconds after every successful call.
     On HTTP 429: sleeps _RETRY_WAIT seconds then retries (up to _MAX_RETRIES).
     """
-    global _last_call_time, _total_requests
+    global _last_call_time, _total_requests, _calls_today, _calls_today_date
 
     if not POLYGON_API_KEY:
         print("  [Poly] POLYGON_API_KEY not set — cannot fetch", flush=True)
@@ -103,6 +131,13 @@ def _poly_get(path: str) -> dict | None:
             _call_times.append(now)
             _last_call_time = now
             _total_requests += 1
+
+            # Daily call counter — reset when the UTC date rolls over
+            today = _today()
+            if today != _calls_today_date:
+                _calls_today_date = today
+                _calls_today = 0
+            _calls_today += 1
 
             if r.status_code == 429:
                 if attempt < _MAX_RETRIES:
@@ -164,25 +199,97 @@ def _parse_aggs(data: dict | None, symbol: str, label: str) -> pd.DataFrame | No
     return pd.DataFrame(rows).sort_values("datetime").reset_index(drop=True)
 
 
+# ── Disk persistence ──────────────────────────────────────────────────────
+# Cache survives restarts so one full scan covers subsequent restarts without
+# burning API calls. DataFrames serialise as column arrays with epoch-ms dates.
+
+def _df_to_cols(df: pd.DataFrame | None) -> dict | None:
+    if df is None or df.empty:
+        return None
+    return {
+        "datetime": (df["datetime"].astype("int64") // 1_000_000).tolist(),
+        "open":     df["open"].astype(float).tolist(),
+        "high":     df["high"].astype(float).tolist(),
+        "low":      df["low"].astype(float).tolist(),
+        "close":    df["close"].astype(float).tolist(),
+        "volume":   df["volume"].astype(float).tolist(),
+    }
+
+
+def _cols_to_df(cols: dict | None) -> pd.DataFrame | None:
+    if not cols or not cols.get("datetime"):
+        return None
+    df = pd.DataFrame(cols)
+    df["datetime"] = pd.to_datetime(df["datetime"], unit="ms")
+    return df.sort_values("datetime").reset_index(drop=True)
+
+
+def _save_cache() -> None:
+    """Atomically write the in-memory cache to _CACHE_FILE."""
+    try:
+        with _cache_lock:
+            snapshot = {
+                sym: {
+                    "daily":     _df_to_cols(e.get("daily")),
+                    "daily_ts":  e.get("daily_ts", 0),
+                    "hourly":    _df_to_cols(e.get("hourly")),
+                    "hourly_ts": e.get("hourly_ts", 0),
+                }
+                for sym, e in _cache.items()
+            }
+        tmp = _CACHE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snapshot, f)
+        os.replace(tmp, _CACHE_FILE)
+    except Exception as exc:
+        print(f"  [CACHE] save failed: {exc}", flush=True)
+
+
+def _load_cache() -> None:
+    """Load the disk cache on startup and log fresh/stale counts."""
+    if not os.path.exists(_CACHE_FILE):
+        print(f"  [CACHE] no cache file at {_CACHE_FILE} — starting cold", flush=True)
+        return
+    try:
+        with open(_CACHE_FILE) as f:
+            snapshot = json.load(f)
+    except Exception as exc:
+        print(f"  [CACHE] load failed ({exc}) — starting cold", flush=True)
+        return
+
+    now = time.time()
+    d_fresh = d_stale = h_fresh = h_stale = 0
+    with _cache_lock:
+        for sym, e in snapshot.items():
+            df_d = _cols_to_df(e.get("daily"))
+            df_h = _cols_to_df(e.get("hourly"))
+            _cache[sym] = {
+                "daily":     df_d,  "daily_ts":  e.get("daily_ts", 0),
+                "hourly":    df_h,  "hourly_ts": e.get("hourly_ts", 0),
+            }
+            if df_d is not None:
+                if now - e.get("daily_ts", 0)  < _DAILY_TTL:  d_fresh += 1
+                else:                                         d_stale += 1
+            if df_h is not None:
+                if now - e.get("hourly_ts", 0) < _HOURLY_TTL: h_fresh += 1
+                else:                                         h_stale += 1
+
+    print(f"  [CACHE] loaded {len(snapshot)} symbols from {_CACHE_FILE}", flush=True)
+    print(f"  [CACHE] {d_fresh} daily candles fresh, {d_stale} stale", flush=True)
+    print(f"  [CACHE] {h_fresh} hourly candles fresh, {h_stale} stale", flush=True)
+
+
 # ── Per-type fetchers (each costs 1 API call + 12 s sleep) ───────────────
 
 def _fetch_daily(symbol: str) -> pd.DataFrame | None:
-    url = (
-        f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/day"
-        f"/{_days_ago(_DAILY_DAYS)}/{_today()}"
-    )
-    df = _parse_aggs(_poly_get(url), symbol, "daily")
+    df = _parse_aggs(_poly_get(_daily_url(symbol)), symbol, "daily")
     rows = len(df) if df is not None else 0
     print(f"  [Poly] {symbol} daily — {rows} rows", flush=True)
     return df
 
 
 def _fetch_hourly(symbol: str) -> pd.DataFrame | None:
-    url = (
-        f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/hour"
-        f"/{_days_ago(_HOURLY_DAYS)}/{_today()}"
-    )
-    df = _parse_aggs(_poly_get(url), symbol, "hourly")
+    df = _parse_aggs(_poly_get(_hourly_url(symbol)), symbol, "hourly")
     rows = len(df) if df is not None else 0
     print(f"  [Poly] {symbol} hourly — {rows} rows", flush=True)
     return df
@@ -194,102 +301,114 @@ def batch_scan_populate(symbols: list[str]) -> None:
     """
     Fetch every stale symbol sequentially, obeying the rate limit.
 
-    Daily  data: stale after 4 hours  → 1 call/symbol
+    Daily  data: stale after 4 hours   → 1 call/symbol
     Hourly data: stale after 30 minutes → 1 call/symbol
 
-    Fetches daily then hourly per symbol so each symbol is fully populated
-    before the scanner processes it.  Re-checks freshness inside the loop so
-    concurrent code paths (e.g. _get_spy_daily) don't trigger double-fetches.
+    Builds an explicit ordered list of (symbol, kind) fetch steps up front, then
+    walks it one step at a time. Each step fetches exactly one thing, prints the
+    actual URL next to its own step number, then advances — so the step number,
+    the symbol/kind label and the URL on the wire can never drift apart.
     """
     all_syms = list(dict.fromkeys(symbols + ["SPY"]))
     now = time.time()
 
+    # Build the exact work list. One entry == one API call.
+    steps: list[tuple[str, str]] = []
     with _cache_lock:
-        daily_stale  = {s for s in all_syms
-                        if s not in _cache or now - _cache[s].get("daily_ts",  0) >= _DAILY_TTL}
-        hourly_stale = {s for s in all_syms
-                        if s not in _cache or now - _cache[s].get("hourly_ts", 0) >= _HOURLY_TTL}
+        for s in all_syms:
+            e = _cache.get(s, {})
+            if e.get("daily") is None or now - e.get("daily_ts", 0) >= _DAILY_TTL:
+                steps.append((s, "daily"))
+            if e.get("hourly") is None or now - e.get("hourly_ts", 0) >= _HOURLY_TTL:
+                steps.append((s, "hourly"))
 
-    total_calls = len(daily_stale) + len(hourly_stale)
-    if total_calls == 0:
+    total = len(steps)
+    if total == 0:
         print(f"  [Poly] all {len(all_syms)} symbols fresh in cache — skipping fetch", flush=True)
         return
 
-    est_min = total_calls * (_INTER_REQ_SLEEP + 1) / 60
+    n_daily  = sum(1 for _, k in steps if k == "daily")
+    n_hourly = total - n_daily
+    est_min  = total * (_INTER_REQ_SLEEP + 1) / 60
     print(
-        f"  [Poly] batch: {len(daily_stale)} daily + {len(hourly_stale)} hourly stale"
-        f" = {total_calls} API calls  (est. {est_min:.1f} min)",
+        f"  [Poly] batch: {n_daily} daily + {n_hourly} hourly stale"
+        f" = {total} API calls  (est. {est_min:.1f} min)",
         flush=True,
     )
 
-    done = 0
-    for sym in all_syms:
-        needs_daily  = sym in daily_stale
-        needs_hourly = sym in hourly_stale
-        if not needs_daily and not needs_hourly:
-            continue
+    populated = 0
+    for i, (sym, kind) in enumerate(steps, 1):
+        ttl = _DAILY_TTL if kind == "daily" else _HOURLY_TTL
 
-        # Re-check: another code path may have already fetched this symbol
+        # Re-check: another code path may have already fetched this exact item.
         now = time.time()
         with _cache_lock:
-            entry = _cache.get(sym, {})
-            if needs_daily  and now - entry.get("daily_ts",  0) < _DAILY_TTL:
-                needs_daily  = False
-            if needs_hourly and now - entry.get("hourly_ts", 0) < _HOURLY_TTL:
-                needs_hourly = False
+            e = _cache.get(sym, {})
+            if e.get(kind) is not None and now - e.get(f"{kind}_ts", 0) < ttl:
+                print(f"  [Poly] [{i}/{total}] {sym} {kind} — already fresh, skipping", flush=True)
+                continue
 
-        if needs_daily:
-            done += 1
-            print(f"  [Poly] [{done}/{total_calls}] {sym} daily …", flush=True)
-            df_d = _fetch_daily(sym)
-            with _cache_lock:
-                e = _cache.setdefault(sym, {})
-                e["daily"]    = df_d
-                e["daily_ts"] = time.time()
+        url = _daily_url(sym) if kind == "daily" else _hourly_url(sym)
+        print(f"  [Poly] [{i}/{total}] {sym} {kind} → {url}", flush=True)
 
-        if needs_hourly:
-            done += 1
-            print(f"  [Poly] [{done}/{total_calls}] {sym} hourly …", flush=True)
-            df_h = _fetch_hourly(sym)
-            with _cache_lock:
-                e = _cache.setdefault(sym, {})
-                e["hourly"]    = df_h
-                e["hourly_ts"] = time.time()
+        df = _parse_aggs(_poly_get(url), sym, kind)
+        rows = len(df) if df is not None else 0
+        print(f"  [Poly] [{i}/{total}] {sym} {kind} — {rows} rows", flush=True)
 
-    with _cache_lock:
-        populated = sum(1 for s in daily_stale if _cache.get(s, {}).get("daily") is not None)
-    print(f"  [Poly] batch done — {populated}/{len(daily_stale)} daily populated", flush=True)
+        with _cache_lock:
+            e = _cache.setdefault(sym, {})
+            e[kind]            = df
+            e[f"{kind}_ts"]    = time.time()
+        if df is not None:
+            populated += 1
+        _save_cache()
+
+    print(f"  [Poly] batch done — {populated}/{total} steps populated", flush=True)
 
 
 # ── Public OHLC getter ────────────────────────────────────────────────────
 
 def get_ohlc(symbol: str) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    global _cache_hits
+    global _cache_hits, _cache_misses
     now = time.time()
 
     with _cache_lock:
         entry        = _cache.get(symbol, {})
-        daily_fresh  = now - entry.get("daily_ts",  0) < _DAILY_TTL
-        hourly_fresh = now - entry.get("hourly_ts", 0) < _HOURLY_TTL
+        daily_ts     = entry.get("daily_ts",  0)
+        hourly_ts    = entry.get("hourly_ts", 0)
+        daily_fresh  = entry.get("daily")  is not None and now - daily_ts  < _DAILY_TTL
+        hourly_fresh = entry.get("hourly") is not None and now - hourly_ts < _HOURLY_TTL
 
-    if daily_fresh and hourly_fresh:
+    dirty = False
+
+    # Daily — cache hit is instant (no sleep); a miss costs one rate-limited call.
+    if daily_fresh:
         _cache_hits += 1
-        return entry.get("daily"), entry.get("hourly")
-
-    # Fetch only what is stale
-    if not daily_fresh:
+        print(f"  [CACHE HIT] {symbol} daily — age {_fmt_age(now - daily_ts)}", flush=True)
+    else:
+        _cache_misses += 1
         df_d = _fetch_daily(symbol)
         with _cache_lock:
             e = _cache.setdefault(symbol, {})
             e["daily"]    = df_d
             e["daily_ts"] = time.time()
+        dirty = True
 
-    if not hourly_fresh:
+    # Hourly — same pattern.
+    if hourly_fresh:
+        _cache_hits += 1
+        print(f"  [CACHE HIT] {symbol} hourly — age {_fmt_age(now - hourly_ts)}", flush=True)
+    else:
+        _cache_misses += 1
         df_h = _fetch_hourly(symbol)
         with _cache_lock:
             e = _cache.setdefault(symbol, {})
             e["hourly"]    = df_h
             e["hourly_ts"] = time.time()
+        dirty = True
+
+    if dirty:
+        _save_cache()
 
     with _cache_lock:
         entry = _cache.get(symbol, {})
@@ -330,6 +449,7 @@ def _get_spy_daily() -> pd.DataFrame | None:
         e = _cache.setdefault("SPY", {})
         e["daily"]    = df_d
         e["daily_ts"] = time.time()
+    _save_cache()
     return df_d
 
 
@@ -386,6 +506,7 @@ def poly_status() -> dict:
         "rate_limit_per_minute": _RATE_LIMIT,
         "total_requests":        _total_requests,
         "cache_hits":            _cache_hits,
+        "cache_misses":          _cache_misses,
         "cache_size":            cache_size,
         "daily_populated":       daily_pop,
         "hourly_populated":      hourly_pop,
@@ -393,3 +514,41 @@ def poly_status() -> dict:
         "daily_ttl_hours":       _DAILY_TTL / 3600,
         "hourly_ttl_minutes":    _HOURLY_TTL / 60,
     }
+
+
+# ── Cache status snapshot (for /api/cache_status) ─────────────────────────
+
+def cache_status() -> dict:
+    """Disk-cache snapshot: file path/size, per-symbol ages, call & hit stats."""
+    now = time.time()
+    try:
+        size = os.path.getsize(_CACHE_FILE) if os.path.exists(_CACHE_FILE) else 0
+    except OSError:
+        size = 0
+
+    symbols_cached: list[dict] = []
+    with _cache_lock:
+        for sym, e in sorted(_cache.items()):
+            d_ts = e.get("daily_ts", 0)
+            h_ts = e.get("hourly_ts", 0)
+            symbols_cached.append({
+                "symbol":              sym,
+                "daily_age_minutes":   round((now - d_ts) / 60, 1) if e.get("daily")  is not None and d_ts else None,
+                "hourly_age_minutes":  round((now - h_ts) / 60, 1) if e.get("hourly") is not None and h_ts else None,
+            })
+
+    checks   = _cache_hits + _cache_misses
+    hit_rate = round(_cache_hits / checks * 100, 1) if checks else 0.0
+    calls_today = _calls_today if _calls_today_date == _today() else 0
+
+    return {
+        "cache_file_path":  _CACHE_FILE,
+        "cache_size_bytes": size,
+        "symbols_cached":   symbols_cached,
+        "api_calls_today":  calls_today,
+        "cache_hit_rate":   hit_rate,
+    }
+
+
+# ── Load disk cache on import so a restart doesn't burn API calls ─────────
+_load_cache()

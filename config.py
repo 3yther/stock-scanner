@@ -54,8 +54,11 @@ BEAR_POSITION_SCALE = 0.5     # halve position size in bear regime
 
 INITIAL_BALANCE     = 1000.0
 
-SCAN_INTERVAL       = 600     # scanner runs every 10 minutes (cold scan takes ~10 min with rate limiting)
-TRADE_LOOP_INTERVAL = 60      # trader checks positions every 60 seconds
+# Scan cadence depends on market state (chosen per-scan in scanner.run_loop).
+SCAN_INTERVAL_OPEN   = 300    # market OPEN   → scan every 5 minutes
+SCAN_INTERVAL_CLOSED = 1800   # market CLOSED → scan every 30 minutes
+SCAN_INTERVAL        = SCAN_INTERVAL_CLOSED   # fallback / legacy default
+TRADE_LOOP_INTERVAL  = 60     # trader checks positions every 60 seconds
 
 DASHBOARD_PORT      = 5002
 DB_PATH             = "trades.db"
