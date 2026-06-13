@@ -62,6 +62,8 @@ def api_backtest_run():
     start_date = (body.get("start") or default_start)[:10]
     end_date   = (body.get("end")   or today.isoformat())[:10]
     mode       = "hourly" if body.get("mode") == "hourly" else "daily"
+    split      = body.get("split") if body.get("split") in ("full", "train", "validation") else "full"
+    split_date = (body.get("split_date") or "")[:10] or None
     try:
         capital = float(body.get("capital", config.INITIAL_BALANCE))
     except (TypeError, ValueError):
@@ -72,10 +74,12 @@ def api_backtest_run():
     if backtest.is_running():
         return jsonify({"started": False, "reason": "A backtest is already running"}), 409
 
-    started = backtest.start(start_date, end_date, capital, mode)
-    print(f"[BACKTEST] run requested: {start_date}→{end_date} ${capital} mode={mode} started={started}", flush=True)
+    started = backtest.start(start_date, end_date, capital, mode, split, split_date)
+    print(f"[BACKTEST] run requested: {start_date}→{end_date} ${capital} mode={mode} "
+          f"split={split} split_date={split_date} started={started}", flush=True)
     return jsonify({"started": started, "start": start_date, "end": end_date,
-                    "capital": capital, "mode": mode})
+                    "capital": capital, "mode": mode, "split": split,
+                    "split_date": split_date})
 
 
 @app.route("/api/backtest_status")

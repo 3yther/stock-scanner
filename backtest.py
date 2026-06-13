@@ -83,22 +83,42 @@ def is_running() -> bool:
         return _state["status"] in ("fetching", "running")
 
 
+def _annualised_sharpe(equity_curve: list[dict]) -> float:
+    """Annualised Sharpe (risk-free = 0) from a daily equity curve."""
+    eqs  = [pt["equity"] for pt in equity_curve]
+    rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs)) if eqs[i - 1] > 0]
+    if len(rets) <= 1:
+        return 0.0
+    mean = sum(rets) / len(rets)
+    var  = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    std  = math.sqrt(var)
+    return (mean / std * math.sqrt(252)) if std > 0 else 0.0
+
+
 # ── Public entry point ────────────────────────────────────────────────────
 
 def start(start_date: str, end_date: str, capital: float, mode: str,
+          split: str = "full", split_date: str | None = None,
           symbols: list[str] | None = None) -> bool:
     """Kick off a backtest in a background thread. Returns False if one is
-    already running."""
+    already running.
+
+    split : 'full' | 'train' | 'validation' — which slice of [start,end] to
+            simulate. split_date is the train/validation boundary (defaults to
+            60% of the way through the range if not given).
+    """
     if is_running():
         return False
     syms = symbols or [s for s in config.SYMBOLS if s != "SPY"]
+    split = split if split in ("full", "train", "validation") else "full"
     _set(status="fetching", progress=0.0, message="Starting…", mode=mode,
          result=None, error=None, started_at=time.time(), finished_at=None,
          params={"start": start_date, "end": end_date, "capital": capital,
-                 "mode": mode, "symbols": syms})
+                 "mode": mode, "split": split, "split_date": split_date,
+                 "symbols": syms})
     threading.Thread(
         target=_run, name="backtest",
-        args=(start_date, end_date, float(capital), mode, syms),
+        args=(start_date, end_date, float(capital), mode, split, split_date, syms),
         daemon=True,
     ).start()
     return True
@@ -151,12 +171,32 @@ class _HourlySeries:
 # ── The simulation ────────────────────────────────────────────────────────
 
 def _run(start_date: str, end_date: str, capital: float, mode: str,
-         symbols: list[str]) -> None:
+         split: str, split_date: str | None, symbols: list[str]) -> None:
     try:
-        fetch_start = (datetime.strptime(start_date, "%Y-%m-%d").date()
-                       - timedelta(days=_WARMUP_DAYS)).isoformat()
         user_start  = datetime.strptime(start_date, "%Y-%m-%d").date()
         end         = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+        # Train/validation boundary. Default: 60% of the way through the range.
+        if split_date:
+            split_dt = datetime.strptime(split_date[:10], "%Y-%m-%d").date()
+        else:
+            span     = (end - user_start).days
+            split_dt = user_start + timedelta(days=int(span * 0.60))
+        split_dt = min(max(split_dt, user_start), end)   # clamp inside range
+
+        # The slice we actually SIMULATE. We always fetch the full range below
+        # (so the disk cache is shared across slices and no extra API calls are
+        # made), then restrict the walk-forward window here. Train stops at the
+        # split, so validation-period data can never leak into a train run.
+        if   split == "train":
+            sim_start, sim_end = user_start, split_dt
+        elif split == "validation":
+            sim_start, sim_end = split_dt, end
+        else:  # full
+            sim_start, sim_end = user_start, end
+
+        # Always fetch the full user range (minus warmup) regardless of slice.
+        fetch_start = (user_start - timedelta(days=_WARMUP_DAYS)).isoformat()
 
         # SPY drives the trading calendar and the regime filter.
         all_syms = list(dict.fromkeys(symbols + ["SPY"]))
@@ -192,11 +232,13 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
             return
 
         spy = daily["SPY"]
-        # Master calendar: SPY trading days within the requested window.
-        calendar = [d for d in spy.dates if user_start <= d <= end]
+        # Master calendar: SPY trading days within the SIMULATED slice only.
+        calendar = [d for d in spy.dates if sim_start <= d <= sim_end]
         # Need a previous bar to fill against, and 50 SPY bars for the regime.
         if len(calendar) < 2:
-            _set(status="error", error="Date range too short / no trading days.",
+            _set(status="error",
+                 error=f"{split.upper()} slice too short / no trading days "
+                       f"({sim_start} → {sim_end}).",
                  finished_at=time.time())
             return
 
@@ -332,14 +374,31 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
             px = daily[sym].close_asof(final_date)
             if px is not None:
                 _close_position(sym, px, final_date, "END OF TEST")
-        pos_val = 0.0  # all closed
         equity_curve[-1]["equity"] = round(balance, 2)
 
+        # ---- SPY buy-and-hold benchmark over the SAME slice ----
+        # Buy SPY with the full starting capital at the first bar's open, hold to
+        # the end. Uses the SPY daily series already fetched for the regime
+        # filter — no extra API calls. Marked to market on the same calendar so
+        # the curve aligns with the strategy's day by day.
+        spy_first_open = spy.open_on(calendar[0]) or spy.close_asof(calendar[0])
+        bench_shares   = (capital / spy_first_open) if spy_first_open else 0.0
+        benchmark_curve = [
+            {"date": D.isoformat(),
+             "equity": round(bench_shares * (spy.close_asof(D) or spy_first_open), 2)}
+            for D in calendar
+        ]
+
         result = _metrics(capital, balance, equity_curve, trades, mode, symbols,
-                          start_date, end_date, hourly_data)
+                          start_date, end_date, hourly_data,
+                          benchmark_curve=benchmark_curve, split=split,
+                          split_date=split_dt.isoformat(),
+                          sim_start=sim_start.isoformat(),
+                          sim_end=sim_end.isoformat())
         _set(status="done", progress=1.0, result=result, finished_at=time.time(),
-             message=f"Done — {len(trades)} trades, "
-                     f"{result['total_return_pct']:+.1f}% return")
+             message=f"Done [{split.upper()}] — {len(trades)} trades, "
+                     f"{result['total_return_pct']:+.1f}% return "
+                     f"(SPY {result['benchmark']['return_pct']:+.1f}%)")
 
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -351,8 +410,9 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
 
 def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
              trades: list[dict], mode: str, symbols: list[str],
-             start_date: str, end_date: str,
-             hourly_data: dict) -> dict:
+             start_date: str, end_date: str, hourly_data: dict,
+             benchmark_curve: list[dict] | None = None, split: str = "full",
+             split_date: str = "", sim_start: str = "", sim_end: str = "") -> dict:
     final_equity = equity_curve[-1]["equity"] if equity_curve else final_balance
     total_return = (final_equity / initial - 1) * 100 if initial else 0.0
 
@@ -381,15 +441,20 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
         dd_curve.append({"date": pt["date"], "drawdown": round(dd, 2)})
 
     # Annualised Sharpe from daily equity returns (risk-free = 0).
-    eqs = [pt["equity"] for pt in equity_curve]
-    rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs)) if eqs[i - 1] > 0]
-    sharpe = 0.0
-    if len(rets) > 1:
-        mean = sum(rets) / len(rets)
-        var  = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-        std  = math.sqrt(var)
-        if std > 0:
-            sharpe = mean / std * math.sqrt(252)
+    sharpe = _annualised_sharpe(equity_curve)
+
+    # SPY buy-and-hold benchmark over the same slice — the scoreboard.
+    benchmark_curve = benchmark_curve or []
+    bench_final  = benchmark_curve[-1]["equity"] if benchmark_curve else initial
+    bench_return = (bench_final / initial - 1) * 100 if initial else 0.0
+    bench_sharpe = _annualised_sharpe(benchmark_curve)
+    alpha        = total_return - bench_return
+    benchmark = {
+        "name":         "SPY buy & hold",
+        "final_equity": round(bench_final, 2),
+        "return_pct":   round(bench_return, 2),
+        "sharpe":       round(bench_sharpe, 2),
+    }
 
     # Per-symbol breakdown.
     by_symbol: dict[str, dict] = {}
@@ -413,10 +478,31 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
         else "DAILY-ONLY (trend AND entry on daily candles)"
     )
 
+    # Prominent slice banner. Validation is the out-of-sample test you must not
+    # have tuned on.
+    split_titles = {
+        "full":       "FULL RANGE",
+        "train":      "TRAIN SET (in-sample — tune here)",
+        "validation": "VALIDATION SET — data NOT used for tuning",
+    }
+    split_banner = (
+        f"{split_titles.get(split, 'FULL RANGE')} — {sim_start} to {sim_end}"
+    )
+
     return {
         "label":            "BACKTEST — Simulated, not live trades",
         "mode":             mode,
         "mode_label":       mode_label,
+        "split":            split,
+        "split_date":       split_date,
+        "sim_start":        sim_start,
+        "sim_end":          sim_end,
+        "split_banner":     split_banner,
+        "benchmark":        benchmark,
+        "alpha":            round(alpha, 2),
+        "beat_benchmark":   total_return > bench_return,
+        "beat_sharpe":      sharpe > bench_sharpe,
+        "benchmark_curve":  benchmark_curve,
         "start_date":       start_date,
         "end_date":         end_date,
         "symbols":          symbols,

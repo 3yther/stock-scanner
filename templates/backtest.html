@@ -122,6 +122,27 @@
     color: var(--subtle); font-size: 12px;
   }
   .pill { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--surface2); color: var(--subtle); border:1px solid var(--border); }
+
+  /* Prominent slice banner */
+  .slice-banner {
+    display: flex; align-items: center; gap: 12px; border-radius: 10px;
+    padding: 14px 18px; margin-bottom: 16px; font-weight: 700; font-size: 15px;
+    letter-spacing: .3px; border: 1px solid var(--border); background: var(--surface2);
+  }
+  .slice-banner .tag { font-family: var(--mono); font-size: 11px; padding: 3px 10px; border-radius: 6px; font-weight: 700; }
+  .slice-full       { color: var(--blue);   } .slice-full .tag   { background: rgba(88,166,255,.15);  color: var(--blue); }
+  .slice-train      { color: var(--purple); } .slice-train .tag  { background: rgba(188,140,255,.15); color: var(--purple); }
+  .slice-validation { color: var(--yellow); border-color: rgba(210,153,34,.5); background: rgba(210,153,34,.08); }
+  .slice-validation .tag { background: rgba(210,153,34,.2); color: var(--yellow); }
+
+  /* VS Benchmark card */
+  .bench-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 20px; }
+  .bench-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  @media (max-width: 700px) { .bench-grid { grid-template-columns: repeat(2, 1fr); } }
+  .bench-col { border-left: 3px solid var(--border); padding-left: 12px; }
+  .bench-col .k { font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing:.5px; margin-bottom:6px; }
+  .bench-col .v { font-family: var(--mono); font-size: 20px; font-weight: 500; }
+  .bench-verdict { font-family: var(--mono); font-size: 12px; padding: 3px 10px; border-radius: 6px; font-weight:700; }
 </style>
 </head>
 <body>
@@ -167,12 +188,27 @@
         </select>
       </div>
       <div class="field">
+        <label>Data slice</label>
+        <select id="f-split">
+          <option value="full" selected>FULL — entire range</option>
+          <option value="train">TRAIN — in-sample (first 60%)</option>
+          <option value="validation">VALIDATION — out-of-sample (last 40%)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Split date (optional)</label>
+        <input type="date" id="f-split-date">
+      </div>
+      <div class="field">
         <button class="btn" id="run-btn">Run Backtest</button>
       </div>
     </div>
     <div class="hint">
-      Defaults to the last 2 years. First run fetches history with a 12s rate-limit delay between calls
-      (a few minutes); results are cached so re-runs are instant.
+      <strong style="color:var(--text)">Tune your strategy on TRAIN. Confirm it still works on VALIDATION.</strong>
+      If it works on TRAIN but fails on VALIDATION, it was overfitting.<br>
+      Split date defaults to 60% through the range; leave it blank to use the default.
+      Defaults to the last 2 years. First run fetches history with a 12s rate-limit delay between
+      calls (a few minutes); results are cached so re-runs are instant.
     </div>
   </div>
 
@@ -189,6 +225,38 @@
 
   <!-- Results -->
   <div id="results">
+
+    <!-- Prominent slice banner -->
+    <div class="slice-banner" id="slice-banner">
+      <span class="tag" id="slice-tag">SLICE</span>
+      <span id="slice-text"></span>
+    </div>
+
+    <!-- VS Benchmark scoreboard -->
+    <div class="bench-card">
+      <div class="card-hdr" style="border:0;padding:0 0 12px;display:flex;justify-content:space-between;align-items:center">
+        <span>VS Benchmark &mdash; SPY Buy &amp; Hold</span>
+        <span class="bench-verdict" id="bench-verdict">&mdash;</span>
+      </div>
+      <div class="bench-grid">
+        <div class="bench-col">
+          <div class="k">Strategy Return</div>
+          <div class="v" id="b-strat">&mdash;</div>
+        </div>
+        <div class="bench-col">
+          <div class="k">SPY Return</div>
+          <div class="v" id="b-spy">&mdash;</div>
+        </div>
+        <div class="bench-col">
+          <div class="k">Alpha (excess)</div>
+          <div class="v" id="b-alpha">&mdash;</div>
+        </div>
+        <div class="bench-col">
+          <div class="k">Sharpe — Strategy vs SPY</div>
+          <div class="v" id="b-sharpe">&mdash;</div>
+        </div>
+      </div>
+    </div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
       <span class="pill" id="r-mode">mode</span>
@@ -343,6 +411,7 @@ $('run-btn').addEventListener('click', async () => {
   const body = {
     start: $('f-start').value, end: $('f-end').value,
     capital: parseFloat($('f-capital').value)||1000, mode: $('f-mode').value,
+    split: $('f-split').value, split_date: $('f-split-date').value || null,
   };
   $('run-btn').disabled = true;
   try {
@@ -378,6 +447,27 @@ async function poll(){
 function render(r){
   if(!r) return;
   $('results').style.display='block';
+
+  // Prominent slice banner
+  const sb = $('slice-banner');
+  sb.className = 'slice-banner slice-' + (r.split||'full');
+  $('slice-tag').textContent = (r.split||'full').toUpperCase();
+  $('slice-text').textContent = r.split_banner;
+
+  // VS Benchmark scoreboard
+  const b = r.benchmark || {return_pct:0, sharpe:0};
+  $('b-strat').textContent = pct(r.total_return_pct);
+  $('b-strat').className = 'v ' + cls(r.total_return_pct);
+  $('b-spy').textContent = pct(b.return_pct);
+  $('b-spy').className = 'v ' + cls(b.return_pct);
+  $('b-alpha').textContent = pct(r.alpha) + (r.beat_benchmark ? '  (beat SPY)' : '  (lost to SPY)');
+  $('b-alpha').className = 'v ' + (r.beat_benchmark ? 'pos' : 'neg');
+  $('b-sharpe').textContent = parseFloat(r.sharpe).toFixed(2) + ' vs ' + parseFloat(b.sharpe).toFixed(2);
+  $('b-sharpe').className = 'v ' + (r.beat_sharpe ? 'pos' : 'neg');
+  const verdict = $('bench-verdict');
+  if(r.beat_benchmark){ verdict.textContent='✓ STRATEGY BEAT SPY'; verdict.style.background='rgba(63,185,80,.15)'; verdict.style.color='var(--green)'; }
+  else { verdict.textContent='✗ LOST TO BUY & HOLD'; verdict.style.background='rgba(248,81,73,.15)'; verdict.style.color='var(--red)'; }
+
   $('r-mode').textContent = r.mode_label;
   $('r-range').textContent = r.start_date+' → '+r.end_date;
   $('r-slip').textContent = 'slippage '+r.slippage_pct+'% · fills next open';
@@ -400,7 +490,7 @@ function render(r){
   $('m-gw').textContent = money(r.gross_wins);
   $('m-gl').textContent = money(r.gross_losses);
 
-  buildEquity(r.equity_curve, r.initial_balance);
+  buildEquity(r.equity_curve, r.benchmark_curve || [], r.initial_balance);
   buildDD(r.drawdown_curve);
 
   // by symbol
@@ -457,18 +547,19 @@ document.querySelectorAll('th.sortable').forEach(th=>{
   });
 });
 
-function buildEquity(curve, initial){
+function buildEquity(curve, bench, initial){
   if(equityChart) equityChart.destroy();
   const ctx = $('equity-chart').getContext('2d');
   const labels = curve.map(d=>d.date);
   const values = curve.map(d=>d.equity);
-  const baseline = labels.map(()=>initial);
+  const benchVals = bench.map(d=>d.equity);
   equityChart = new Chart(ctx,{ type:'line', data:{ labels, datasets:[
-      { label:'Equity', data:values, borderColor:'#3FB950', backgroundColor:'rgba(63,185,80,.08)', fill:true, tension:.2, borderWidth:2 },
-      { label:'Start', data:baseline, borderColor:'rgba(139,148,158,.4)', borderDash:[4,4], borderWidth:1, fill:false },
+      { label:'Strategy', data:values, borderColor:'#3FB950', backgroundColor:'rgba(63,185,80,.08)', fill:true, tension:.2, borderWidth:2 },
+      { label:'SPY buy & hold', data:benchVals, borderColor:'#58A6FF', borderDash:[6,4], borderWidth:1.5, fill:false, tension:.2 },
     ]},
     options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
-      plugins:{ ...CHART_DEFAULTS.plugins, tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+money(c.raw) } } },
+      plugins:{ legend:{ display:true, labels:{ color:'#8B949E', font:{size:11}, usePointStyle:true, boxWidth:8 } },
+        tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+c.dataset.label+': '+money(c.raw) } } },
       scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>'$'+v.toLocaleString() } } } } });
 }
 
