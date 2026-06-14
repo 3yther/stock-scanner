@@ -159,6 +159,32 @@
   .bench-col .k { font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing:.5px; margin-bottom:6px; }
   .bench-col .v { font-family: var(--mono); font-size: 20px; font-weight: 500; }
   .bench-verdict { font-family: var(--mono); font-size: 12px; padding: 3px 10px; border-radius: 6px; font-weight:700; }
+
+  /* TRAIN vs VALIDATION comparison */
+  #compare-results { display:none; }
+  .cmp-banner { border-radius:10px; padding:16px 20px; margin-bottom:18px; border:1px solid var(--border); background:var(--surface); }
+  .cmp-banner.good { border-color:rgba(63,185,80,.5); background:rgba(63,185,80,.08); }
+  .cmp-banner.bad  { border-color:rgba(248,81,73,.5); background:rgba(248,81,73,.08); }
+  .cmp-sharpes { font-family:var(--mono); font-size:18px; font-weight:700; margin-bottom:6px; }
+  .cmp-verdict { font-size:15px; font-weight:700; }
+  .cmp-verdict.good { color:var(--green); } .cmp-verdict.bad { color:var(--red); }
+  .cmp-panels { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width: 900px) { .cmp-panels { grid-template-columns:1fr; } }
+  .cmp-panel { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .cmp-panel-hdr { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  .cmp-panel-hdr .tag { font-family:var(--mono); font-weight:700; font-size:12px; padding:3px 10px; border-radius:6px; }
+  .cmp-panel.train  .cmp-panel-hdr .tag { color:var(--purple); background:rgba(188,140,255,.15); }
+  .cmp-panel.val    .cmp-panel-hdr .tag { color:var(--yellow); background:rgba(210,153,34,.18); }
+  .cmp-panel-hdr .rng { font-family:var(--mono); font-size:11px; color:var(--subtle); }
+  .cmp-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--border); }
+  .cmp-cell { background:var(--surface); padding:12px 14px; }
+  .cmp-cell .k { font-size:10px; color:var(--subtle); text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+  .cmp-cell .v { font-family:var(--mono); font-size:17px; font-weight:600; }
+  .cmp-cell .v.pos { color:var(--green); } .cmp-cell .v.neg { color:var(--red); }
+  .cmp-chart { padding:12px 14px; }
+  .cmp-chart h4 { font-size:10px; font-weight:600; color:var(--subtle); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
+  .cmp-chart .wrap { position:relative; height:180px; }
+  .cmp-chart canvas { width:100% !important; height:100% !important; }
 </style>
 </head>
 <body>
@@ -232,15 +258,7 @@
         </select>
       </div>
       <div class="field">
-        <label>Data slice</label>
-        <select id="f-split">
-          <option value="full" selected>FULL — entire range</option>
-          <option value="train">TRAIN — in-sample (first 60%)</option>
-          <option value="validation">VALIDATION — out-of-sample (last 40%)</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Split date (optional)</label>
+        <label>Split date (train / validation)</label>
         <input type="date" id="f-split-date">
       </div>
       <div class="field">
@@ -249,11 +267,11 @@
     </div>
     <div class="hint" id="strat-desc" style="padding-top:0;color:var(--blue)"></div>
     <div class="hint">
-      <strong style="color:var(--text)">Tune your strategy on TRAIN. Confirm it still works on VALIDATION.</strong>
-      If it works on TRAIN but fails on VALIDATION, it was overfitting.<br>
-      Split date defaults to 60% through the range; leave it blank to use the default.
-      Defaults to the last 2 years. First run fetches history with a 12s rate-limit delay between
-      calls (a few minutes); results are cached so re-runs are instant.
+      <strong style="color:var(--text)">Set a Split date</strong> to run TRAIN (start → split) and
+      VALIDATION (split → end) back-to-back with identical settings, then compare.
+      <strong style="color:var(--text)">Leave it blank</strong> for a single full-range backtest.<br>
+      Tune on TRAIN, confirm on VALIDATION — if it works on TRAIN but fails on VALIDATION, it was overfitting.
+      First run fetches history with a 12s rate-limit delay between calls (a few minutes); results are cached so re-runs are instant.
     </div>
   </div>
 
@@ -438,6 +456,15 @@
 
   </div>
 
+  <!-- TRAIN vs VALIDATION comparison (shown when a split date is set) -->
+  <div id="compare-results">
+    <div class="cmp-banner" id="cmp-banner">
+      <div class="cmp-sharpes" id="cmp-summary">&mdash;</div>
+      <div class="cmp-verdict" id="cmp-verdict">&mdash;</div>
+    </div>
+    <div class="cmp-panels" id="cmp-panels"></div>
+  </div>
+
 </main>
 
 <footer>
@@ -499,7 +526,7 @@ $('f-strategy').addEventListener('change', updateStratDesc);
 const NOSTORE = { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } };
 const jget = async u => (await fetch(u + (u.includes('?')?'&':'?') + '_t=' + Date.now(), NOSTORE)).json();
 
-let runStart = 0, estSeconds = 30, sawFetch = false;
+let runStart = 0, estSeconds = 30;
 
 function fmtTime(sec){
   sec = Math.max(0, Math.round(sec));
@@ -521,87 +548,107 @@ async function estimateSeconds(nSymbols){
 $('run-btn').addEventListener('click', async () => {
   $('error-box').style.display='none';
   $('results').style.display='none';
-  const body = {
+  $('compare-results').style.display='none';
+
+  const base = {
     start: $('f-start').value, end: $('f-end').value,
     capital: parseFloat($('f-capital').value)||1000, mode: $('f-mode').value,
-    split: $('f-split').value, split_date: $('f-split-date').value || null,
     strategy: $('f-strategy').value,
     sizing: $('f-sizing').value, exit_mode: $('f-exit').value,
     max_positions: parseInt($('f-maxpos').value, 10) || 3,
   };
-  console.log('[backtest] POST payload', body);   // verify what's actually sent
+  const splitDate = $('f-split-date').value || null;
+
   $('run-btn').disabled = true;
   $('progress-card').style.display='block';
   setPhase('fetch'); $('progress-bar').style.width='2%';
   $('progress-msg').textContent = 'Checking data cache…';
-
-  // ~24 default symbols (+SPY); cheap upfront warm/cold hint.
-  estSeconds = await estimateSeconds(25);
-  runStart = Date.now(); sawFetch = false;
-  $('progress-eta').textContent = (estSeconds > 60 ? '~'+fmtTime(estSeconds)+' (cold cache — fetching from Polygon)' : '~'+fmtTime(estSeconds)+' (warm cache)');
+  estSeconds = await estimateSeconds(25);   // ~24 default symbols (+SPY)
 
   try {
-    const res = await (await fetch('/api/backtest_run', {
-      method:'POST', cache:'no-store',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
-    })).json();
-    console.log('[backtest] start response', res);
-    if(!res.started){ showError(res.reason || 'Could not start backtest'); reset(); return; }
-    poll();
-  } catch(e){ showError('Request failed: '+e); reset(); }
+    if(!splitDate){
+      // Single full-range backtest (unchanged behaviour).
+      const r = await runOnce({...base, split:'full', split_date:null}, '');
+      reset(); render(r);
+    } else {
+      // Same settings, two segments back-to-back. TRAIN first; VALIDATION then
+      // runs off the warm cache. Each segment is an independent walk-forward
+      // (no lookahead within it); TRAIN stops at the split so no leakage.
+      const train = await runOnce({...base, split:'train',      split_date:splitDate}, 'TRAIN');
+      const val   = await runOnce({...base, split:'validation', split_date:splitDate}, 'VALIDATION');
+      reset(); renderComparison(train, val);
+    }
+  } catch(e){ showError(''+(e && e.message ? e.message : e)); reset(); }
 });
 
 function reset(){ $('run-btn').disabled=false; $('progress-card').style.display='none'; }
 function showError(msg){ const b=$('error-box'); b.textContent='⚠ '+msg; b.style.display='block'; }
 
 const PHASES = ['fetch','run','build'];
-function setPhase(active){
+function setPhase(active, label){
   const idx = PHASES.indexOf(active);
   document.querySelectorAll('.phase-step').forEach(el=>{
     const i = PHASES.indexOf(el.dataset.ph);
     el.className = 'phase-step' + (i<idx?' done':(i===idx?' active':''));
   });
-  $('progress-phase').textContent =
+  const pre = label ? '['+label+'] ' : '';
+  $('progress-phase').textContent = pre + (
     active==='fetch' ? 'Fetching market data…' :
-    active==='run'   ? 'Running strategy…' : 'Building results…';
+    active==='run'   ? 'Running strategy…' : 'Building results…');
 }
 
-async function poll(){
-  try {
-    const s = await jget('/api/backtest_status');
-    const prog = s.progress || 0;
-    if(prog > 0.02 && prog < 0.45) sawFetch = true;
+// POST one backtest and resolve with its result dict when it finishes.
+function runOnce(body, label){
+  console.log('[backtest] POST payload', body);
+  runStart = Date.now();
+  return fetch('/api/backtest_run', {
+    method:'POST', cache:'no-store',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+  }).then(r=>r.json()).then(res=>{
+    console.log('[backtest] start response', res);
+    if(!res.started) throw new Error(res.reason || 'Could not start backtest');
+    return new Promise((resolve, reject)=>{
+      (function p(){
+        jget('/api/backtest_status').then(s=>{
+          updateProgress(s, label);
+          if(s.status==='done'){ resolve(s.result); return; }
+          if(s.status==='error'){ reject(new Error(s.error||'Backtest failed')); return; }
+          setTimeout(p, 1000);
+        }).catch(()=> setTimeout(p, 2000));
+      })();
+    });
+  });
+}
 
-    // Phase from backend progress (fetch 0–0.45, sim 0.45–0.95, build ≥0.95).
-    const phase = prog < 0.45 ? 'fetch' : (prog < 0.95 ? 'run' : 'build');
-    setPhase(phase);
-
-    // Bar: blend backend progress with a gentle time-based crawl so a cold
-    // fetch (12s between symbols) never looks frozen.
-    const elapsed = (Date.now() - runStart)/1000;
-    const timeFrac = Math.min(0.44, (elapsed/estSeconds)*0.45);
-    const shown = Math.max(prog, prog < 0.45 ? timeFrac : prog);
-    $('progress-bar').style.width = Math.round(shown*100)+'%';
-    $('progress-msg').textContent = (s.message || 'Working…') + '  ('+Math.round(prog*100)+'%)';
-
-    // ETA: prefer a velocity-based estimate once progress is real.
-    let remaining = estSeconds - elapsed;
-    if(prog > 0.05) remaining = Math.min(remaining, elapsed*(1-prog)/prog);
-    $('progress-eta').textContent = remaining > 1 ? '~'+fmtTime(remaining)+' remaining'
-                                                  : 'Still working…';
-
-    if(s.status==='done'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; render(s.result); return; }
-    if(s.status==='error'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; showError(s.error||'Backtest failed'); return; }
-    setTimeout(poll, 1000);
-  } catch(e){ setTimeout(poll, 2000); }
+function updateProgress(s, label){
+  const prog = s.progress || 0;
+  // Phase from backend progress (fetch 0–0.45, sim 0.45–0.95, build ≥0.95).
+  setPhase(prog < 0.45 ? 'fetch' : (prog < 0.95 ? 'run' : 'build'), label);
+  // Bar: blend backend progress with a gentle time crawl so a cold fetch
+  // (12s between symbols) never looks frozen.
+  const elapsed = (Date.now() - runStart)/1000;
+  const timeFrac = Math.min(0.44, (elapsed/estSeconds)*0.45);
+  const shown = Math.max(prog, prog < 0.45 ? timeFrac : prog);
+  $('progress-bar').style.width = Math.round(shown*100)+'%';
+  const pre = label ? '['+label+'] ' : '';
+  $('progress-msg').textContent = pre + (s.message || 'Working…') + '  ('+Math.round(prog*100)+'%)';
+  let remaining = estSeconds - elapsed;
+  if(prog > 0.05) remaining = Math.min(remaining, elapsed*(1-prog)/prog);
+  $('progress-eta').textContent = remaining > 1 ? '~'+fmtTime(remaining)+' remaining' : 'Still working…';
 }
 
 // If a run is already in flight (e.g. page reload), resume showing progress.
-// A finished result is only re-rendered if no new run is started.
 (async function(){
   try { const s = await jget('/api/backtest_status');
-    if(s.status==='running'||s.status==='fetching'){ runStart = Date.now(); $('progress-card').style.display='block'; $('run-btn').disabled=true; poll(); }
-    else if(s.status==='done' && s.result) render(s.result);
+    if(s.status==='running'||s.status==='fetching'){
+      runStart = Date.now(); $('progress-card').style.display='block'; $('run-btn').disabled=true;
+      (function p(){ jget('/api/backtest_status').then(st=>{
+        updateProgress(st, '');
+        if(st.status==='done'){ reset(); render(st.result); return; }
+        if(st.status==='error'){ reset(); showError(st.error||'Backtest failed'); return; }
+        setTimeout(p, 1000);
+      }).catch(()=> setTimeout(p, 2000)); })();
+    } else if(s.status==='done' && s.result) render(s.result);
   } catch(e){}
 })();
 
@@ -744,6 +791,99 @@ function buildDD(curve){
     options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
       plugins:{ ...CHART_DEFAULTS.plugins, tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+c.raw.toFixed(2)+'%' } } },
       scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, max:0, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>v.toFixed(0)+'%' } } } } });
+}
+
+// ===== TRAIN vs VALIDATION comparison =====
+let cmpCharts = {};
+
+function renderComparison(train, val){
+  $('results').style.display='none';
+  $('compare-results').style.display='block';
+
+  const ts = +train.sharpe, vs = +val.sharpe;
+  // "within 30% of train Sharpe", generalised so it also works when train
+  // Sharpe is ≤ 0 (a >30% relative drop from the train level).
+  const within30 = vs >= ts - 0.3*Math.abs(ts);
+  const valBeatsSPY = val.total_return_pct > ((val.benchmark||{}).return_pct || 0);
+  const holds = within30 && valBeatsSPY;
+
+  $('cmp-summary').textContent = `TRAIN Sharpe ${ts.toFixed(2)} → VALIDATION Sharpe ${vs.toFixed(2)}`;
+  const v = $('cmp-verdict');
+  v.textContent = holds ? '✓ HOLDS — likely real edge'
+                        : '✗ OVERFIT — train result was fitted to that period';
+  v.className = 'cmp-verdict ' + (holds ? 'good' : 'bad');
+  $('cmp-banner').className = 'cmp-banner ' + (holds ? 'good' : 'bad');
+
+  $('cmp-panels').innerHTML = panelHTML('TRAIN', train, 'train') + panelHTML('VALIDATION', val, 'val');
+
+  makeEquity('eq-train', train); makeDD('dd-train', train); fillSymTable('sym-train', train.by_symbol);
+  makeEquity('eq-val',   val);   makeDD('dd-val',   val);   fillSymTable('sym-val',   val.by_symbol);
+}
+
+function panelHTML(label, r, sfx){
+  const b = r.benchmark || {return_pct:0, sharpe:0};
+  const pf = r.profit_factor==null ? '∞' : (+r.profit_factor).toFixed(2);
+  const cell = (k,vv,c) => `<div class="cmp-cell"><div class="k">${k}</div><div class="v ${c||''}">${vv}</div></div>`;
+  return `
+  <div class="cmp-panel ${sfx==='train'?'train':'val'}">
+    <div class="cmp-panel-hdr">
+      <span class="tag">${label}</span>
+      <span class="rng">${r.sim_start} &rarr; ${r.sim_end}</span>
+    </div>
+    <div class="cmp-grid">
+      ${cell('Return', pct(r.total_return_pct), cls(r.total_return_pct))}
+      ${cell('SPY Return', pct(b.return_pct), cls(b.return_pct))}
+      ${cell('Alpha', pct(r.alpha), r.beat_benchmark?'pos':'neg')}
+      ${cell('Sharpe / SPY', (+r.sharpe).toFixed(2)+' / '+(+b.sharpe).toFixed(2), r.sharpe>=b.sharpe?'pos':'neg')}
+      ${cell('Max Drawdown', (+r.max_drawdown_pct).toFixed(2)+'%', 'neg')}
+      ${cell('Win Rate', r.win_rate+'%', r.win_rate>=50?'pos':'neg')}
+      ${cell('Profit Factor', pf, (r.profit_factor==null||r.profit_factor>=1.5)?'pos':(r.profit_factor>=1?'':'neg'))}
+      ${cell('Trades', r.total_trades, '')}
+    </div>
+    <div class="cmp-chart"><h4>Equity vs SPY buy &amp; hold</h4><div class="wrap"><canvas id="eq-${sfx}"></canvas></div></div>
+    <div class="cmp-chart"><h4>Drawdown (%)</h4><div class="wrap"><canvas id="dd-${sfx}"></canvas></div></div>
+    <div class="cmp-chart"><h4>By Symbol</h4>
+      <div class="table-wrap" style="max-height:200px">
+        <table><thead><tr><th>Symbol</th><th>Trades</th><th>Win %</th><th>P&amp;L</th></tr></thead>
+        <tbody id="sym-${sfx}"><tr><td colspan="4" class="empty">No closed trades</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>`;
+}
+
+function makeEquity(id, r){
+  if(cmpCharts[id]) cmpCharts[id].destroy();
+  const ctx = document.getElementById(id).getContext('2d');
+  const labels = (r.equity_curve||[]).map(d=>d.date);
+  cmpCharts[id] = new Chart(ctx, { type:'line', data:{ labels, datasets:[
+      { label:'Strategy', data:(r.equity_curve||[]).map(d=>d.equity), borderColor:'#3FB950', backgroundColor:'rgba(63,185,80,.08)', fill:true, tension:.2, borderWidth:2, pointRadius:0 },
+      { label:'SPY', data:(r.benchmark_curve||[]).map(d=>d.equity), borderColor:'#58A6FF', borderDash:[6,4], borderWidth:1.5, fill:false, pointRadius:0 },
+    ]},
+    options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{ display:true, labels:{ color:'#8B949E', font:{size:10}, usePointStyle:true, boxWidth:8 } },
+        tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+c.dataset.label+': '+money(c.raw) } } },
+      scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>'$'+v.toLocaleString() } } } } });
+}
+
+function makeDD(id, r){
+  if(cmpCharts[id]) cmpCharts[id].destroy();
+  const ctx = document.getElementById(id).getContext('2d');
+  const labels = (r.drawdown_curve||[]).map(d=>d.date);
+  cmpCharts[id] = new Chart(ctx, { type:'line', data:{ labels, datasets:[
+      { label:'Drawdown', data:(r.drawdown_curve||[]).map(d=>d.drawdown), borderColor:'#F85149', backgroundColor:'rgba(248,81,73,.12)', fill:true, tension:.2, borderWidth:1.5, pointRadius:0 } ]},
+    options:{ ...CHART_DEFAULTS, interaction:{mode:'index',intersect:false},
+      plugins:{ ...CHART_DEFAULTS.plugins, tooltip:{ backgroundColor:'#1C2128', borderColor:'#21262D', borderWidth:1, callbacks:{ label:c=>' '+c.raw.toFixed(2)+'%' } } },
+      scales:{ ...CHART_DEFAULTS.scales, y:{ ...CHART_DEFAULTS.scales.y, max:0, ticks:{ ...CHART_DEFAULTS.scales.y.ticks, callback:v=>v.toFixed(0)+'%' } } } } });
+}
+
+function fillSymTable(id, rows){
+  const tb = $(id);
+  tb.innerHTML = (rows && rows.length) ? rows.map(b=>`<tr>
+    <td style="color:var(--blue);font-weight:600">${b.symbol}</td>
+    <td>${b.trades}</td>
+    <td class="${b.win_rate>=50?'pos':'neg'}">${b.win_rate}%</td>
+    <td class="${cls(b.pnl)}">${money(b.pnl)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">No closed trades</td></tr>';
 }
 </script>
 </body>
