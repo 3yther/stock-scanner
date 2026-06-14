@@ -136,6 +136,17 @@
   .slice-validation .tag { background: rgba(210,153,34,.2); color: var(--yellow); }
 
   /* VS Benchmark card */
+  /* Active modes badge */
+  .modes-badge { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:16px;
+    padding:10px 16px; border-radius:10px; background:var(--surface); border:1px solid var(--border); font-size:13px; }
+  .modes-badge .mb-seg { display:inline-flex; align-items:center; gap:8px; }
+  .modes-badge .mb-k { font-size:10px; font-weight:700; letter-spacing:.6px; color:var(--subtle); }
+  .modes-badge .mb-v { font-family:var(--mono); font-weight:700; color:var(--green); padding:2px 8px;
+    border-radius:6px; background:rgba(63,185,80,.12); }
+  .modes-badge .mb-v.alt { color:var(--yellow); background:rgba(210,153,34,.14); }
+  .modes-badge .mb-dot { color:var(--subtle); }
+  .modes-badge .mb-detail { color:var(--subtle); font-size:11px; font-family:var(--mono); margin-left:4px; }
+
   .bench-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 20px; }
   .bench-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
   @media (max-width: 700px) { .bench-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -192,6 +203,20 @@
         </select>
       </div>
       <div class="field">
+        <label>Sizing</label>
+        <select id="f-sizing">
+          <option value="flat" selected>flat — 5% of cash</option>
+          <option value="vol_conviction">vol_conviction — ATR risk-parity × conviction</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Exit</label>
+        <select id="f-exit">
+          <option value="fixed_tp" selected>fixed_tp — 4% TP + trail</option>
+          <option value="trail_only">trail_only — 3×ATR trail, let winners run</option>
+        </select>
+      </div>
+      <div class="field">
         <label>Data slice</label>
         <select id="f-split">
           <option value="full" selected>FULL — entire range</option>
@@ -235,6 +260,14 @@
     <div class="slice-banner" id="slice-banner">
       <span class="tag" id="slice-tag">SLICE</span>
       <span id="slice-text"></span>
+    </div>
+
+    <!-- Active sizing / exit modes badge -->
+    <div class="modes-badge" id="modes-badge">
+      <span class="mb-seg"><span class="mb-k">SIZING</span><span class="mb-v" id="mb-sizing">flat</span></span>
+      <span class="mb-dot">·</span>
+      <span class="mb-seg"><span class="mb-k">EXIT</span><span class="mb-v" id="mb-exit">fixed_tp</span></span>
+      <span class="mb-detail" id="mb-detail"></span>
     </div>
 
     <!-- VS Benchmark scoreboard -->
@@ -442,6 +475,7 @@ $('run-btn').addEventListener('click', async () => {
     capital: parseFloat($('f-capital').value)||1000, mode: $('f-mode').value,
     split: $('f-split').value, split_date: $('f-split-date').value || null,
     strategy: $('f-strategy').value,
+    sizing: $('f-sizing').value, exit_mode: $('f-exit').value,
   };
   $('run-btn').disabled = true;
   try {
@@ -497,6 +531,13 @@ function render(r){
   const verdict = $('bench-verdict');
   if(r.beat_benchmark){ verdict.textContent='✓ STRATEGY BEAT SPY'; verdict.style.background='rgba(63,185,80,.15)'; verdict.style.color='var(--green)'; }
   else { verdict.textContent='✗ LOST TO BUY & HOLD'; verdict.style.background='rgba(248,81,73,.15)'; verdict.style.color='var(--red)'; }
+
+  // Active sizing / exit modes badge
+  $('mb-sizing').textContent = r.sizing || 'flat';
+  $('mb-sizing').className = 'mb-v' + (r.sizing === 'vol_conviction' ? ' alt' : '');
+  $('mb-exit').textContent = r.exit_mode || 'fixed_tp';
+  $('mb-exit').className = 'mb-v' + (r.exit_mode === 'trail_only' ? ' alt' : '');
+  $('mb-detail').textContent = (r.sizing_label || '') + '  |  ' + (r.exit_label || '');
 
   $('r-strategy').textContent = '🧠 ' + (r.strategy_label || r.strategy || 'strategy');
   $('r-mode').textContent = r.mode_label;

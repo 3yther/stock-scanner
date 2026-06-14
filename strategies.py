@@ -274,6 +274,52 @@ def manage_position(pos: dict, price: float) -> str | None:
     return None
 
 
+def atr(df: pd.DataFrame | None, period: int = 14) -> float | None:
+    """Average True Range over `period` completed bars (causal / no lookahead).
+
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|). Uses only
+    bars up to and including the last row of `df`, so calling it on a
+    point-in-time slice gives the ATR as it stood at that bar's close. Returns
+    a price-unit value, or None if there isn't enough history.
+    """
+    if df is None or len(df) < period + 1:
+        return None
+    high, low, close = df["high"], df["low"], df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low).abs(),
+                    (high - prev_close).abs(),
+                    (low - prev_close).abs()], axis=1).max(axis=1)
+    val = tr.rolling(period).mean().iloc[-1]
+    return float(val) if pd.notna(val) else None
+
+
+def manage_position_atr(pos: dict, price: float, atr_value: float,
+                        atr_mult: float = 3.0) -> str | None:
+    """ATR-based 'let winners run' trailing stop — NO fixed take-profit.
+
+    Trails `atr_mult` × ATR below the highest price reached since entry; keeps
+    the same break-even behaviour (once up BREAKEVEN_TRIGGER, the stop can't drop
+    below entry). Mutates pos in place like manage_position. Returns an exit
+    action or None. The caller still applies the (extended) max-hold limit.
+    """
+    if price > pos["highest_price"]:
+        pos["highest_price"] = price
+
+    upnl_pct = (price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
+    if upnl_pct >= config.BREAKEVEN_TRIGGER and not pos["breakeven_active"]:
+        pos["breakeven_active"] = True
+
+    trail_sl = pos["highest_price"] - atr_mult * atr_value
+    if pos["breakeven_active"]:
+        trail_sl = max(trail_sl, pos["entry_price"])
+
+    if price <= trail_sl:
+        if pos["breakeven_active"] and price <= pos["entry_price"]:
+            return "BREAK-EVEN STOP"
+        return "ATR TRAILING STOP"
+    return None
+
+
 # ── Shared trend helper ───────────────────────────────────────────────────
 
 def trend_up_sma(df: pd.DataFrame | None, period: int = 50) -> bool:
