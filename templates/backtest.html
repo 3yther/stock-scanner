@@ -75,6 +75,11 @@
   .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--blue), var(--purple)); transition: width .4s ease; }
   .progress-msg { font-size: 12px; color: var(--subtle); font-family: var(--mono); }
   .spinner { display:inline-block; width:13px; height:13px; border:2px solid rgba(88,166,255,.3); border-top-color: var(--blue); border-radius:50%; animation: spin .8s linear infinite; vertical-align:-2px; margin-right:6px; }
+  .phase-steps { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; font-size:11px; }
+  .phase-step { padding:3px 10px; border-radius:6px; background:var(--surface2); color:var(--subtle); border:1px solid var(--border); font-family:var(--mono); }
+  .phase-step.active { color:var(--blue); border-color:rgba(88,166,255,.4); background:rgba(88,166,255,.1); font-weight:700; }
+  .phase-step.done { color:var(--green); border-color:rgba(63,185,80,.35); background:rgba(63,185,80,.08); }
+  .phase-arrow { color:var(--subtle); font-size:11px; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   #results { display: none; }
@@ -217,6 +222,16 @@
         </select>
       </div>
       <div class="field">
+        <label>Max positions</label>
+        <select id="f-maxpos">
+          <option value="3" selected>3 (default)</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
+      </div>
+      <div class="field">
         <label>Data slice</label>
         <select id="f-split">
           <option value="full" selected>FULL — entire range</option>
@@ -244,8 +259,19 @@
 
   <!-- Progress -->
   <div class="card" id="progress-card">
-    <div class="card-hdr">Running&hellip;</div>
+    <div class="card-hdr">
+      <span id="progress-phase">Starting&hellip;</span>
+      <span id="progress-eta" style="text-transform:none;letter-spacing:0;color:var(--blue);font-family:var(--mono)"></span>
+    </div>
     <div style="padding:18px">
+      <!-- Phase stepper -->
+      <div class="phase-steps" id="phase-steps">
+        <span class="phase-step" data-ph="fetch">1 · Fetching market data</span>
+        <span class="phase-arrow">&rarr;</span>
+        <span class="phase-step" data-ph="run">2 · Running strategy</span>
+        <span class="phase-arrow">&rarr;</span>
+        <span class="phase-step" data-ph="build">3 · Building results</span>
+      </div>
       <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
       <div class="progress-msg"><span class="spinner"></span><span id="progress-msg">Starting&hellip;</span></div>
     </div>
@@ -267,6 +293,8 @@
       <span class="mb-seg"><span class="mb-k">SIZING</span><span class="mb-v" id="mb-sizing">flat</span></span>
       <span class="mb-dot">·</span>
       <span class="mb-seg"><span class="mb-k">EXIT</span><span class="mb-v" id="mb-exit">fixed_tp</span></span>
+      <span class="mb-dot">·</span>
+      <span class="mb-seg"><span class="mb-k">MAX POS</span><span class="mb-v" id="mb-maxpos">3</span></span>
       <span class="mb-detail" id="mb-detail"></span>
     </div>
 
@@ -447,7 +475,7 @@ const CHART_DEFAULTS = {
 let STRATS = {};
 (async function(){
   try {
-    const s = await (await fetch('/api/strategies')).json();
+    const s = await (await fetch('/api/strategies', {cache:'no-store'})).json();
     const sel = $('f-strategy');
     sel.innerHTML = '';
     (s.strategies||[]).forEach(st=>{
@@ -466,6 +494,29 @@ function updateStratDesc(){
 }
 $('f-strategy').addEventListener('change', updateStratDesc);
 
+// Always bypass the browser HTTP cache so we never render a stale status/result
+// (this is what made a previous run's badge "stick" after changing options).
+const NOSTORE = { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } };
+const jget = async u => (await fetch(u + (u.includes('?')?'&':'?') + '_t=' + Date.now(), NOSTORE)).json();
+
+let runStart = 0, estSeconds = 30, sawFetch = false;
+
+function fmtTime(sec){
+  sec = Math.max(0, Math.round(sec));
+  if(sec >= 60) return Math.floor(sec/60)+'m '+(sec%60)+'s';
+  return sec+'s';
+}
+
+// Rough warm/cold estimate from the data cache before we start.
+async function estimateSeconds(nSymbols){
+  try {
+    const cs = await jget('/api/cache_status');
+    const cached = (cs.symbols_cached || []).length;
+    const warm = cached >= Math.max(1, nSymbols - 2);   // most symbols already on disk
+    return warm ? 12 : Math.max(30, nSymbols * 12);     // cold: ~12s/symbol (Polygon rate limit)
+  } catch(e){ return Math.max(30, nSymbols * 12); }
+}
+
 // ---- run ----
 $('run-btn').addEventListener('click', async () => {
   $('error-box').style.display='none';
@@ -476,35 +527,81 @@ $('run-btn').addEventListener('click', async () => {
     split: $('f-split').value, split_date: $('f-split-date').value || null,
     strategy: $('f-strategy').value,
     sizing: $('f-sizing').value, exit_mode: $('f-exit').value,
+    max_positions: parseInt($('f-maxpos').value, 10) || 3,
   };
+  console.log('[backtest] POST payload', body);   // verify what's actually sent
   $('run-btn').disabled = true;
+  $('progress-card').style.display='block';
+  setPhase('fetch'); $('progress-bar').style.width='2%';
+  $('progress-msg').textContent = 'Checking data cache…';
+
+  // ~24 default symbols (+SPY); cheap upfront warm/cold hint.
+  estSeconds = await estimateSeconds(25);
+  runStart = Date.now(); sawFetch = false;
+  $('progress-eta').textContent = (estSeconds > 60 ? '~'+fmtTime(estSeconds)+' (cold cache — fetching from Polygon)' : '~'+fmtTime(estSeconds)+' (warm cache)');
+
   try {
-    const res = await (await fetch('/api/backtest_run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-    if(!res.started){ showError(res.reason || 'Could not start backtest'); $('run-btn').disabled=false; return; }
-    $('progress-card').style.display='block';
+    const res = await (await fetch('/api/backtest_run', {
+      method:'POST', cache:'no-store',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+    })).json();
+    console.log('[backtest] start response', res);
+    if(!res.started){ showError(res.reason || 'Could not start backtest'); reset(); return; }
     poll();
-  } catch(e){ showError('Request failed: '+e); $('run-btn').disabled=false; }
+  } catch(e){ showError('Request failed: '+e); reset(); }
 });
 
+function reset(){ $('run-btn').disabled=false; $('progress-card').style.display='none'; }
 function showError(msg){ const b=$('error-box'); b.textContent='⚠ '+msg; b.style.display='block'; }
+
+const PHASES = ['fetch','run','build'];
+function setPhase(active){
+  const idx = PHASES.indexOf(active);
+  document.querySelectorAll('.phase-step').forEach(el=>{
+    const i = PHASES.indexOf(el.dataset.ph);
+    el.className = 'phase-step' + (i<idx?' done':(i===idx?' active':''));
+  });
+  $('progress-phase').textContent =
+    active==='fetch' ? 'Fetching market data…' :
+    active==='run'   ? 'Running strategy…' : 'Building results…';
+}
 
 async function poll(){
   try {
-    const s = await (await fetch('/api/backtest_status')).json();
-    const p = Math.round((s.progress||0)*100);
-    $('progress-bar').style.width = p+'%';
-    $('progress-msg').textContent = (s.message||'') + '  ('+p+'%)';
+    const s = await jget('/api/backtest_status');
+    const prog = s.progress || 0;
+    if(prog > 0.02 && prog < 0.45) sawFetch = true;
+
+    // Phase from backend progress (fetch 0–0.45, sim 0.45–0.95, build ≥0.95).
+    const phase = prog < 0.45 ? 'fetch' : (prog < 0.95 ? 'run' : 'build');
+    setPhase(phase);
+
+    // Bar: blend backend progress with a gentle time-based crawl so a cold
+    // fetch (12s between symbols) never looks frozen.
+    const elapsed = (Date.now() - runStart)/1000;
+    const timeFrac = Math.min(0.44, (elapsed/estSeconds)*0.45);
+    const shown = Math.max(prog, prog < 0.45 ? timeFrac : prog);
+    $('progress-bar').style.width = Math.round(shown*100)+'%';
+    $('progress-msg').textContent = (s.message || 'Working…') + '  ('+Math.round(prog*100)+'%)';
+
+    // ETA: prefer a velocity-based estimate once progress is real.
+    let remaining = estSeconds - elapsed;
+    if(prog > 0.05) remaining = Math.min(remaining, elapsed*(1-prog)/prog);
+    $('progress-eta').textContent = remaining > 1 ? '~'+fmtTime(remaining)+' remaining'
+                                                  : 'Still working…';
+
     if(s.status==='done'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; render(s.result); return; }
     if(s.status==='error'){ $('progress-card').style.display='none'; $('run-btn').disabled=false; showError(s.error||'Backtest failed'); return; }
     setTimeout(poll, 1000);
   } catch(e){ setTimeout(poll, 2000); }
 }
 
-// If a finished run already exists (e.g. page reload), show it.
+// If a run is already in flight (e.g. page reload), resume showing progress.
+// A finished result is only re-rendered if no new run is started.
 (async function(){
-  try { const s = await (await fetch('/api/backtest_status')).json();
-    if(s.status==='done' && s.result) render(s.result);
-    else if(s.status==='running'||s.status==='fetching'){ $('progress-card').style.display='block'; $('run-btn').disabled=true; poll(); }
+  try { const s = await jget('/api/backtest_status');
+    if(s.status==='running'||s.status==='fetching'){ runStart = Date.now(); $('progress-card').style.display='block'; $('run-btn').disabled=true; poll(); }
+    else if(s.status==='done' && s.result) render(s.result);
   } catch(e){}
 })();
 
@@ -537,6 +634,8 @@ function render(r){
   $('mb-sizing').className = 'mb-v' + (r.sizing === 'vol_conviction' ? ' alt' : '');
   $('mb-exit').textContent = r.exit_mode || 'fixed_tp';
   $('mb-exit').className = 'mb-v' + (r.exit_mode === 'trail_only' ? ' alt' : '');
+  $('mb-maxpos').textContent = r.max_positions != null ? r.max_positions : 3;
+  $('mb-maxpos').className = 'mb-v' + ((r.max_positions || 3) > 3 ? ' alt' : '');
   $('mb-detail').textContent = (r.sizing_label || '') + '  |  ' + (r.exit_label || '');
 
   $('r-strategy').textContent = '🧠 ' + (r.strategy_label || r.strategy || 'strategy');

@@ -68,6 +68,10 @@ def api_backtest_run():
     sizing     = body.get("sizing") if body.get("sizing") in ("flat", "vol_conviction") else "flat"
     exit_mode  = body.get("exit_mode") if body.get("exit_mode") in ("fixed_tp", "trail_only") else "fixed_tp"
     try:
+        max_positions = int(body.get("max_positions", config.MAX_POSITIONS))
+    except (TypeError, ValueError):
+        max_positions = config.MAX_POSITIONS
+    try:
         capital = float(body.get("capital", config.INITIAL_BALANCE))
     except (TypeError, ValueError):
         capital = config.INITIAL_BALANCE
@@ -78,14 +82,16 @@ def api_backtest_run():
         return jsonify({"started": False, "reason": "A backtest is already running"}), 409
 
     started = backtest.start(start_date, end_date, capital, mode, split, split_date,
-                             strategy, sizing, exit_mode)
+                             strategy, sizing, exit_mode, max_positions)
     print(f"[BACKTEST] run requested: {start_date}→{end_date} ${capital} mode={mode} "
-          f"strategy={strategy} sizing={sizing} exit={exit_mode} split={split} "
+          f"strategy={strategy} sizing={sizing} exit={exit_mode} "
+          f"max_positions={max_positions} split={split} "
           f"split_date={split_date} started={started}", flush=True)
     return jsonify({"started": started, "start": start_date, "end": end_date,
                     "capital": capital, "mode": mode, "split": split,
                     "split_date": split_date, "strategy": strategy,
-                    "sizing": sizing, "exit_mode": exit_mode})
+                    "sizing": sizing, "exit_mode": exit_mode,
+                    "max_positions": max_positions})
 
 
 @app.route("/api/backtest_status")

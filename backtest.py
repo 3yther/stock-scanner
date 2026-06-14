@@ -125,18 +125,21 @@ def _annualised_sharpe(equity_curve: list[dict]) -> float:
 def start(start_date: str, end_date: str, capital: float, mode: str,
           split: str = "full", split_date: str | None = None,
           strategy: str = "macd_mtf", sizing: str = "flat",
-          exit_mode: str = "fixed_tp", symbols: list[str] | None = None) -> bool:
+          exit_mode: str = "fixed_tp", max_positions: int = config.MAX_POSITIONS,
+          symbols: list[str] | None = None) -> bool:
     """Kick off a backtest in a background thread. Returns False if one is
     already running.
 
-    split     : 'full' | 'train' | 'validation' — which slice of [start,end] to
-                simulate. split_date is the train/validation boundary (defaults
-                to 60% of the way through the range if not given).
-    strategy  : registry key in strategies.STRATEGIES (default 'macd_mtf').
-    sizing    : 'flat' (5% of cash, default) | 'vol_conviction' (ATR risk-parity
-                × conviction by rank).
-    exit_mode : 'fixed_tp' (4% TP + 2% trail + BE + max-hold, default) |
-                'trail_only' (ATR trail, no TP, extended max-hold).
+    split         : 'full' | 'train' | 'validation' — which slice of [start,end]
+                    to simulate. split_date is the train/validation boundary
+                    (defaults to 60% of the way through the range if not given).
+    strategy      : registry key in strategies.STRATEGIES (default 'macd_mtf').
+    sizing        : 'flat' (5% of cash, default) | 'vol_conviction' (ATR
+                    risk-parity × conviction by rank).
+    exit_mode     : 'fixed_tp' (4% TP + 2% trail + BE + max-hold, default) |
+                    'trail_only' (ATR trail, no TP, extended max-hold).
+    max_positions : max simultaneous open positions for THIS backtest only
+                    (default = config.MAX_POSITIONS; the live bot is untouched).
     """
     if is_running():
         return False
@@ -144,17 +147,21 @@ def start(start_date: str, end_date: str, capital: float, mode: str,
     split     = split if split in ("full", "train", "validation") else "full"
     sizing    = sizing if sizing in ("flat", "vol_conviction") else "flat"
     exit_mode = exit_mode if exit_mode in ("fixed_tp", "trail_only") else "fixed_tp"
+    try:
+        max_positions = max(1, min(int(max_positions), 20))   # clamp to a sane range
+    except (TypeError, ValueError):
+        max_positions = config.MAX_POSITIONS
     strat = strategies.get_strategy(strategy)   # resolve/validate now
     _set(status="fetching", progress=0.0, message="Starting…", mode=mode,
          result=None, error=None, started_at=time.time(), finished_at=None,
          params={"start": start_date, "end": end_date, "capital": capital,
                  "mode": mode, "split": split, "split_date": split_date,
                  "strategy": strat.name, "sizing": sizing, "exit_mode": exit_mode,
-                 "symbols": syms})
+                 "max_positions": max_positions, "symbols": syms})
     threading.Thread(
         target=_run, name="backtest",
         args=(start_date, end_date, float(capital), mode, split, split_date,
-              strat.name, sizing, exit_mode, syms),
+              strat.name, sizing, exit_mode, max_positions, syms),
         daemon=True,
     ).start()
     return True
@@ -208,10 +215,12 @@ class _HourlySeries:
 
 def _run(start_date: str, end_date: str, capital: float, mode: str,
          split: str, split_date: str | None, strategy: str,
-         sizing: str, exit_mode: str, symbols: list[str]) -> None:
+         sizing: str, exit_mode: str, max_positions: int,
+         symbols: list[str]) -> None:
     try:
         strat = strategies.get_strategy(strategy)
-        print(f"[BT] sizing = {sizing} | exit = {exit_mode}", flush=True)
+        print(f"[BT] sizing = {sizing} | exit = {exit_mode} | "
+              f"max_positions = {max_positions}", flush=True)
         user_start  = datetime.strptime(start_date, "%Y-%m-%d").date()
         end         = datetime.strptime(end_date, "%Y-%m-%d").date()
 
@@ -426,7 +435,7 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                 for s, p in positions.items())
             for opp in pending_entries:
                 sym = opp["symbol"]
-                if len(positions) >= config.MAX_POSITIONS:
+                if len(positions) >= max_positions:   # backtest override (live bot unaffected)
                     break
                 if sym in positions or strategies.sector_blocked(sym, positions.keys()):
                     continue
@@ -527,7 +536,8 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                           sim_start=sim_start.isoformat(),
                           sim_end=sim_end.isoformat(),
                           strategy=strat.name, strategy_label=strat.label,
-                          sizing=sizing, exit_mode=exit_mode)
+                          sizing=sizing, exit_mode=exit_mode,
+                          max_positions=max_positions)
         _set(status="done", progress=1.0, result=result, finished_at=time.time(),
              message=f"Done [{strat.name} · {split.upper()}] — {len(trades)} trades, "
                      f"{result['total_return_pct']:+.1f}% return "
@@ -547,7 +557,8 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
              benchmark_curve: list[dict] | None = None, split: str = "full",
              split_date: str = "", sim_start: str = "", sim_end: str = "",
              strategy: str = "macd_mtf", strategy_label: str = "",
-             sizing: str = "flat", exit_mode: str = "fixed_tp") -> dict:
+             sizing: str = "flat", exit_mode: str = "fixed_tp",
+             max_positions: int = 3) -> dict:
     final_equity = equity_curve[-1]["equity"] if equity_curve else final_balance
     total_return = (final_equity / initial - 1) * 100 if initial else 0.0
 
@@ -645,6 +656,7 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
         "sizing_label":     sizing_label,
         "exit_mode":        exit_mode,
         "exit_label":       exit_label,
+        "max_positions":    max_positions,
         "mode":             mode,
         "mode_label":       mode_label,
         "split":            split,
