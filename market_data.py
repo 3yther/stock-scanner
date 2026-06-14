@@ -208,8 +208,14 @@ def _parse_aggs(data: dict | None, symbol: str, label: str) -> pd.DataFrame | No
 def _df_to_cols(df: pd.DataFrame | None) -> dict | None:
     if df is None or df.empty:
         return None
+    # Force millisecond resolution BEFORE int conversion. pandas 3.0 keeps the
+    # column's native resolution (often datetime64[ms]), so a bare astype("int64")
+    # already yields ms — the old "// 1_000_000" (which assumed ns) then shrank it
+    # ~1e6×, deserialising back to 1970. Normalising to [ms] first is correct for
+    # ns/us/ms columns alike.
+    dt_ms = pd.to_datetime(df["datetime"]).astype("datetime64[ms]").astype("int64")
     return {
-        "datetime": (df["datetime"].astype("int64") // 1_000_000).tolist(),
+        "datetime": dt_ms.tolist(),
         "open":     df["open"].astype(float).tolist(),
         "high":     df["high"].astype(float).tolist(),
         "low":      df["low"].astype(float).tolist(),
@@ -223,6 +229,10 @@ def _cols_to_df(cols: dict | None) -> pd.DataFrame | None:
         return None
     df = pd.DataFrame(cols)
     df["datetime"] = pd.to_datetime(df["datetime"], unit="ms")
+    # Reject legacy/corrupt entries (pre-fix ms-as-ns writes deserialise to 1970)
+    # so the caller refetches instead of trusting garbage timestamps.
+    if df.empty or df["datetime"].iloc[-1].year < 2000:
+        return None
     return df.sort_values("datetime").reset_index(drop=True)
 
 
@@ -591,8 +601,15 @@ def fetch_history(symbol: str, timeframe: str, start: str, end: str) -> pd.DataF
     with _bt_lock:
         cols = _bt_cache.get(key)
     if cols is not None:
-        print(f"  [BACKTEST] cache hit {symbol} {timeframe} {start}→{end}", flush=True)
-        return _cols_to_df(cols)
+        cached = _cols_to_df(cols)
+        if cached is not None:
+            print(f"  [BACKTEST] cache hit {symbol} {timeframe} {start}→{end}", flush=True)
+            return cached
+        # Legacy/corrupt entry (e.g. 1970 timestamps) — drop it and refetch.
+        print(f"  [BACKTEST] stale/corrupt cache for {symbol} {timeframe} "
+              f"{start}→{end} — refetching", flush=True)
+        with _bt_lock:
+            _bt_cache.pop(key, None)
 
     url = (
         f"{_POLY_BASE}/v2/aggs/ticker/{symbol}/range/1/{timeframe}"
