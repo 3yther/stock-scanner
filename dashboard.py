@@ -117,6 +117,37 @@ def api_status():
     return jsonify(data)
 
 
+@app.route("/api/crypto/datatest")
+def api_crypto_datatest():
+    """TEMPORARY (Phase 0): probe whether Binance is reachable from this server's
+    IP. Railway/US IPs usually get a restricted-location error — in which case
+    NoisyEdge uses Coinbase (the default in quant/crypto_data.py). Remove once
+    the data source is confirmed."""
+    out = {"server_can_reach_binance": None}
+    try:
+        r = _http.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": "BTCUSDT", "interval": "5m", "limit": 5}, timeout=10)
+        out["binance_status"] = r.status_code
+        try:
+            out["binance_body"] = r.json()
+        except Exception:
+            out["binance_body"] = r.text[:300]
+        out["server_can_reach_binance"] = (r.status_code == 200 and isinstance(out["binance_body"], list))
+    except Exception as exc:
+        out["binance_error"] = f"{type(exc).__name__}: {exc}"
+        out["server_can_reach_binance"] = False
+    # Also show the Coinbase fallback so you can compare in one call.
+    try:
+        from quant import crypto_data
+        c = crypto_data.get_candles("BTC", "5m", 3)
+        out["active_source"] = crypto_data.source()
+        out["coinbase_sample"] = c[-1] if c else None
+    except Exception as exc:
+        out["crypto_data_error"] = f"{type(exc).__name__}: {exc}"
+    return jsonify(out)
+
+
 @app.route("/api/scanner")
 def api_scanner():
     if _scanner is None:
