@@ -214,6 +214,19 @@ def fvg_exists(symbol: str, timestamp: str) -> bool:
                        (symbol, timestamp)))
 
 
+def get_recent_sweeps(limit: int = 50) -> list[dict]:
+    return _query("SELECT * FROM tjr_sweeps ORDER BY id DESC LIMIT ?", (limit,))
+
+
+def get_recent_mss(limit: int = 50) -> list[dict]:
+    return _query("SELECT * FROM tjr_mss ORDER BY id DESC LIMIT ?", (limit,))
+
+
+def get_recent_filled_fvgs(limit: int = 50) -> list[dict]:
+    cond = "filled = TRUE" if USE_PG else "filled = 1"
+    return _query(f"SELECT * FROM tjr_fvg WHERE {cond} ORDER BY id DESC LIMIT ?", (limit,))
+
+
 def get_buys_since(date_prefix: str, symbol: str | None = None) -> list[dict]:
     """Buys whose timestamp starts with date_prefix (YYYY-MM-DD)."""
     if symbol:

@@ -11,6 +11,7 @@ import backtest
 import config
 import database as db
 import market_data
+from quant import crypto_data, crypto_db, tjr_strategy
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -132,6 +133,92 @@ def api_status():
     data = _trader.status()
     data["uptime_seconds"] = int(_time.time() - _start_time) if _start_time else 0
     return jsonify(data)
+
+
+# ── Crypto Bot (TJR) endpoints ────────────────────────────────────────────
+
+@app.route("/api/tjr/status")
+def api_tjr_status():
+    """Live per-symbol TJR state: asia range, sweep status, latest MSS, active
+    FVG count."""
+    now = datetime.now(timezone.utc)
+    td  = tjr_strategy.trading_date_for(now).isoformat()
+    out = {"trading_date": td, "in_session": tjr_strategy.in_trading_session(now),
+           "symbols": {}}
+    for sym in tjr_strategy.SYMBOLS:
+        asia   = crypto_db.get_asia_range(sym, td)
+        swept  = {s["direction"] for s in crypto_db.get_sweeps_on(sym, td)}
+        mss    = crypto_db.get_latest_mss(sym)
+        active = crypto_db.get_active_fvgs(sym, 20)
+        status = " + ".join(f"{d} swept" for d in ("high", "low") if d in swept) or "no sweep yet"
+        out["symbols"][sym] = {
+            "asia_high":        asia["asia_high"] if asia else None,
+            "asia_low":         asia["asia_low"]  if asia else None,
+            "high_swept":       "high" in swept,
+            "low_swept":        "low" in swept,
+            "sweep_status":     status,
+            "latest_mss":       ({"direction": mss["direction"], "time": mss["timestamp"],
+                                  "price": mss["price"]} if mss else None),
+            "active_fvg_count": len(active),
+        }
+    return jsonify(out)
+
+
+@app.route("/api/tjr/fvgs")
+def api_tjr_fvgs():
+    """All active (unfilled) FVG zones across symbols."""
+    out = []
+    for sym in tjr_strategy.SYMBOLS:
+        for f in crypto_db.get_active_fvgs(sym, 20):
+            out.append({"symbol": sym, "direction": f["direction"],
+                        "top_price": f["top_price"], "bottom_price": f["bottom_price"],
+                        "timestamp": f["timestamp"], "created_at": str(f["created_at"])})
+    return jsonify(out)
+
+
+@app.route("/api/tjr/history")
+def api_tjr_history():
+    """Last 50 TJR-triggered events: sweeps, MSS, FVG fills, buys."""
+    ev = []
+    for s in crypto_db.get_recent_sweeps(50):
+        ev.append({"timestamp": s["timestamp"], "type": f"sweep_{s['direction']}",
+                   "symbol": s["symbol"], "price": s["sweep_price"]})
+    for m in crypto_db.get_recent_mss(50):
+        ev.append({"timestamp": m["timestamp"], "type": f"mss_{m['direction']}",
+                   "symbol": m["symbol"], "price": m["price"]})
+    for f in crypto_db.get_recent_filled_fvgs(50):
+        ev.append({"timestamp": f["filled_at"] or f["timestamp"], "type": f"fvg_fill_{f['direction']}",
+                   "symbol": f["symbol"], "price": f["top_price"]})
+    for b in crypto_db.get_recent_buys(50):
+        ev.append({"timestamp": b["timestamp"], "type": f"buy_{b['type']}",
+                   "symbol": b["symbol"], "price": b["price"],
+                   "usd_amount": b["usd_amount"], "multiplier": b["multiplier"]})
+    ev.sort(key=lambda e: str(e["timestamp"]), reverse=True)
+    return jsonify(ev[:50])
+
+
+@app.route("/api/tjr/candles")
+def api_tjr_candles():
+    """5-min (default) candles for the chart. Served from crypto_data's disk
+    cache, so repeated chart polls don't hammer the exchange."""
+    sym      = (request.args.get("symbol") or "BTC").upper()
+    interval = request.args.get("interval") or "5m"
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 1000))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        return jsonify(crypto_data.get_candles(sym, interval, limit))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/tjr/portfolio")
+def api_tjr_portfolio():
+    """Crypto Bot paper portfolio: balance, BTC/ETH holdings, P&L."""
+    if _crypto_bot is None:
+        return jsonify({"error": "crypto bot not ready"}), 503
+    return jsonify(_crypto_bot.status())
 
 
 @app.route("/api/crypto/datatest")
