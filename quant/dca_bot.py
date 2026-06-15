@@ -20,6 +20,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import notifier
 from quant import crypto_data, crypto_db, tjr_strategy
 
 UTC = timezone.utc
@@ -32,9 +33,6 @@ CANDLE_LIMIT    = 300        # 5m candles pulled per cycle (~25h)
 
 MSS_MULT = 2.5
 FVG_MULT = 1.5
-
-# Optional hook set by Phase 5 (email alerts): fn(kind, symbol, price, mult)
-on_signal = None
 
 
 class CryptoDCABot:
@@ -99,11 +97,14 @@ class CryptoDCABot:
         print(f"[DCA] BUY {symbol} ${usd:,.2f} @ ${price:,.2f} "
               f"({type_} ×{multiplier}) | bal ${self.balance:,.2f} | {symbol} {self.holdings[symbol]:.6f}",
               flush=True)
-        if on_signal and type_ in ("tjr_mss", "tjr_fvg"):
-            try:
-                on_signal(type_, symbol, price, multiplier)
-            except Exception as exc:
-                print(f"[DCA] signal hook error: {exc}", flush=True)
+
+    def _alert(self, headline: str, symbol: str, signal_price: float):
+        """Email a Crypto Bot TJR alert (no-op if email isn't configured)."""
+        print(f"[DCA] ALERT {headline} @ ${signal_price:,.2f}", flush=True)
+        try:
+            notifier.crypto_alert(headline, symbol, signal_price, dict(self.prices))
+        except Exception as exc:
+            print(f"[DCA] alert error: {exc}", flush=True)
 
     # ── One cycle ─────────────────────────────────────────────────────────
 
@@ -121,17 +122,23 @@ class CryptoDCABot:
 
                 # Bullish MSS → 2.5× immediate; Bearish MSS → skip next interval.
                 if res.get("mss"):
-                    if res["mss"]["direction"] == "bull":
+                    mdir   = res["mss"]["direction"]
+                    sig_px = float(res["mss"]["price"])
+                    if mdir == "bull":
                         self._buy(sym, self.base_dca_usd * MSS_MULT, price, "tjr_mss", MSS_MULT)
+                        self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — buying 2.5×", sym, sig_px)
                     else:
                         self._skip_next[sym] = True
                         print(f"[DCA] {sym} bearish MSS — next interval buy skipped", flush=True)
+                        self._alert(f"Crypto Bot TJR: Bearish MSS on {sym} — skipping next buy", sym, sig_px)
 
-                # Price entered a Bullish FVG zone → 1.5×.
-                for f in res.get("filled_fvgs", []):
-                    if f.get("direction") == "bull":
-                        self._buy(sym, self.base_dca_usd * FVG_MULT, price, "tjr_fvg", FVG_MULT)
-                        break   # at most one FVG buy per cycle per symbol
+                # FVG zone entries: bullish → buy 1.5× + alert; bearish → alert only.
+                filled = res.get("filled_fvgs", [])
+                if any(f.get("direction") == "bull" for f in filled):
+                    self._buy(sym, self.base_dca_usd * FVG_MULT, price, "tjr_fvg", FVG_MULT)
+                    self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying 1.5×", sym, price)
+                if any(f.get("direction") == "bear" for f in filled):
+                    self._alert(f"Crypto Bot TJR: Price in Bearish FVG on {sym} — watching", sym, price)
 
                 # Scheduled interval DCA.
                 if time.time() >= self._next_interval[sym]:
