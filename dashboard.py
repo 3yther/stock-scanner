@@ -17,6 +17,7 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 _trader  = None
 _scanner = None
+_crypto_bot = None        # Crypto Bot (TJR DCA) handle — set by configure_crypto()
 _start_time: float = 0.0
 
 # Stats cache (computed on demand, cached for 60s)
@@ -30,6 +31,11 @@ def configure(trader, scanner):
     _trader     = trader
     _scanner    = scanner
     _start_time = _time.time()
+
+
+def configure_crypto(crypto_bot):
+    global _crypto_bot
+    _crypto_bot = crypto_bot
 
 
 # ── Routes ────────────────────────────────────────────────────────────────

@@ -78,6 +78,12 @@ def main():
         name="trader",
     )
 
+    # Crypto Bot (TJR DCA) — 24/7, fully independent of the stock bot's threads.
+    from quant.dca_bot import CryptoDCABot
+    crypto_bot = CryptoDCABot()
+    dashboard.configure_crypto(crypto_bot)
+    crypto_thread = threading.Thread(target=crypto_bot.run, daemon=True, name="crypto-dca")
+
     scanner_thread.start()
     print(f"  scanner thread started — alive={scanner_thread.is_alive()} id={scanner_thread.ident}", flush=True)
 
@@ -85,6 +91,9 @@ def main():
     time.sleep(2)
     trader_thread.start()
     print(f"  trader  thread started — alive={trader_thread.is_alive()}  id={trader_thread.ident}", flush=True)
+
+    crypto_thread.start()
+    print(f"  crypto  thread started — alive={crypto_thread.is_alive()}  id={crypto_thread.ident}", flush=True)
 
     def _shutdown(sig, frame):
         print("\n\n  Shutting down…")

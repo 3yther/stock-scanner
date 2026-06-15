@@ -237,6 +237,7 @@ def process(symbol: str, candles: list[dict], live_price: float | None = None,
     for fvg in crypto_db.get_active_fvgs(symbol, 20):
         if fvg["bottom_price"] <= price <= fvg["top_price"]:
             crypto_db.mark_fvg_filled(fvg["id"], now.isoformat())
-            result["filled_fvgs"].append(fvg["id"])
+            result["filled_fvgs"].append({"id": fvg["id"], "direction": fvg["direction"],
+                                          "top": fvg["top_price"], "bottom": fvg["bottom_price"]})
 
     return result
