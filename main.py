@@ -36,6 +36,9 @@ def main():
     print("[1/4] Initialising database…", flush=True)
     db.init_db()
     print(f"  [MAIN DB] backend={'postgresql' if db.USE_PG else 'sqlite'}  location={db.db_location()}  module_id={id(db)}", flush=True)
+    # Crypto Bot (TJR) tables — same DB, separate tables, never touches `trades`.
+    from quant import crypto_db
+    crypto_db.init_tjr_db()
     # Smoke test — compare module_id here vs [TRADER DB] and [DB INIT] in logs;
     # all three must be identical to confirm they share the same connection.
     try:
