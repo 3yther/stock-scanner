@@ -226,6 +226,28 @@ def api_tjr_portfolio():
     return jsonify(_crypto_bot.status())
 
 
+@app.route("/api/tjr/backtest_run", methods=["POST"])
+def api_tjr_backtest_run():
+    """Kick off a read-only TJR backtest (standard vs TJR-enhanced DCA). Never
+    writes the live tjr_buys ledger."""
+    from quant import tjr_backtest
+    body = request.get_json(force=True) or {}
+    today = datetime.now(timezone.utc).date()
+    end   = (body.get("end")   or today.isoformat())[:10]
+    start = (body.get("start") or (today - timedelta(days=30)).isoformat())[:10]
+    if tjr_backtest.is_running():
+        return jsonify({"started": False, "reason": "A backtest is already running"}), 409
+    started = tjr_backtest.start(start, end)
+    print(f"[TJR BT] run requested: {start}→{end} started={started}", flush=True)
+    return jsonify({"started": started, "start": start, "end": end})
+
+
+@app.route("/api/tjr/backtest_status")
+def api_tjr_backtest_status():
+    from quant import tjr_backtest
+    return jsonify(tjr_backtest.get_status())
+
+
 @app.route("/api/crypto/datatest")
 def api_crypto_datatest():
     """TEMPORARY (Phase 0): probe whether Binance is reachable from this server's

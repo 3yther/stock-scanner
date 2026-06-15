@@ -195,3 +195,52 @@ def get_candles(symbol: str, interval: str = "5m", limit: int = 300) -> list[dic
 def source() -> str:
     """Which exchange is currently in use."""
     return SOURCE
+
+
+def get_candles_range(symbol: str, interval: str, start_ts: int, end_ts: int) -> list[dict]:
+    """Historical candles in [start_ts, end_ts] (epoch seconds), ascending. For
+    the backtester. Cached on disk with a long TTL since historical bars are
+    immutable. Pages backward within the window."""
+    _cache_load()
+    symbol = symbol.upper()
+    if interval not in _INTERVAL_SECONDS:
+        raise ValueError(f"unsupported interval {interval!r}")
+    product = _PRODUCTS.get(SOURCE, {}).get(symbol)
+    if not product:
+        return []
+    gran = _INTERVAL_SECONDS[interval]
+    key  = f"{SOURCE}:{symbol}:{interval}:range:{int(start_ts)}:{int(end_ts)}"
+    now  = time.time()
+    entry = _cache.get(key)
+    if entry and now - entry.get("ts", 0) < 86400:     # 1-day cache for history
+        return entry["data"]
+
+    raw = []
+    end = float(end_ts)
+    pages = 0
+    while end > start_ts and pages < 200:
+        pages += 1
+        start = max(start_ts, end - 300 * gran)
+        try:
+            if SOURCE == "coinbase":
+                rows = _get(f"https://api.exchange.coinbase.com/products/{product}/candles",
+                            {"granularity": gran,
+                             "start": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                             "end":   datetime.fromtimestamp(end, timezone.utc).isoformat()})
+                raw.extend(_norm(r[0], r[3], r[2], r[1], r[4], r[5]) for r in rows)
+                got = len(rows)
+            else:   # binance/kraken: fall back to recent fetch, filtered below
+                rows = _FETCHERS[SOURCE](product, interval, 1000)
+                raw.extend(rows); got = 0
+        except Exception as exc:
+            print(f"  [CRYPTO] range fetch {symbol} failed: {exc}", flush=True)
+            break
+        end = start
+        if SOURCE != "coinbase" or got < 300:
+            break
+
+    by_ts = {c["timestamp"]: c for c in raw if start_ts <= c["timestamp"] <= end_ts}
+    data = sorted(by_ts.values(), key=lambda c: c["timestamp"])
+    _cache[key] = {"ts": now, "data": data}
+    _cache_save()
+    return data

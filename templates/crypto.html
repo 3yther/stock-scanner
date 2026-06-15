@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -103,6 +104,27 @@ th:not(:first-child), td:not(:first-child){ text-align:right; }
 td { padding:7px 12px; border-bottom:1px solid rgba(6,182,212,.06); font-family:var(--mono); white-space:nowrap; }
 tr:last-child td { border-bottom:none; }
 .t-mss { color: var(--green); } .t-fvg { color: var(--cyan); } .t-dca { color: var(--muted); }
+
+/* Backtest section */
+.btn { font-family: var(--mono); font-size:.6rem; font-weight:700; letter-spacing:1px; padding:8px 16px; border-radius:3px; border:1px solid var(--gold); background:rgba(245,158,11,.1); color:var(--gold); cursor:pointer; }
+.btn:hover { background:rgba(245,158,11,.2); } .btn:disabled { opacity:.5; cursor:not-allowed; }
+.bt-form { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; }
+.bt-field { display:flex; flex-direction:column; gap:5px; }
+.bt-field label { font-family:var(--mono); font-size:.5rem; letter-spacing:1px; color:var(--muted); text-transform:uppercase; }
+.bt-field input, .bt-field select { background:var(--surf2); border:1px solid var(--border); color:var(--text); border-radius:3px; padding:6px 9px; font-family:var(--mono); font-size:.66rem; }
+.bt-hint { font-family:var(--mono); font-size:.55rem; color:var(--muted); letter-spacing:.5px; margin-top:8px; }
+.bt-bar-track { height:8px; background:var(--surf2); border-radius:4px; overflow:hidden; margin:12px 0 6px; }
+.bt-bar { height:100%; width:0%; background:linear-gradient(90deg,var(--gold),var(--purple)); transition:width .4s; }
+.bt-msg { font-family:var(--mono); font-size:.6rem; color:var(--muted); }
+.bt-signals { display:flex; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:.62rem; margin:12px 0; }
+.bt-signals b { color: var(--gold); }
+.bt-compare { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:6px; }
+.bt-col { border:1px solid var(--border); border-radius:4px; padding:10px 12px; font-family:var(--mono); }
+.bt-col.sel { border-color: var(--gold); }
+.bt-col .lbl { font-size:.5rem; letter-spacing:1px; color:var(--muted); text-transform:uppercase; }
+.bt-col .ret { font-size:1.05rem; font-weight:600; margin-top:4px; }
+.bt-chart { margin-top:14px; } .bt-chart h4 { font-family:var(--mono); font-size:.55rem; color:var(--muted); letter-spacing:1px; margin-bottom:6px; }
+.bt-chart .cw { position:relative; height:200px; } .bt-chart canvas { width:100% !important; height:100% !important; }
 
 .chart-wrap { position:relative; height: 360px; padding: 8px 8px 0; }
 .chart-wrap canvas { width:100% !important; height:100% !important; display:block; }
@@ -218,6 +240,44 @@ footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: 
         <thead><tr><th>Time (UTC)</th><th>Symbol</th><th>Type</th><th>USD</th><th>Price</th><th>×</th></tr></thead>
         <tbody id="buy-body"><tr><td colspan="6" class="empty">No buys yet</td></tr></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- TJR backtest -->
+  <div class="card">
+    <div class="card-head"><span>> TJR <span class="accent">BACKTEST</span> — Standard vs TJR-enhanced DCA</span>
+      <span class="pill">READ-ONLY</span></div>
+    <div class="card-body">
+      <div class="bt-form">
+        <div class="bt-field"><label>Start</label><input type="date" id="bt-start"></div>
+        <div class="bt-field"><label>End</label><input type="date" id="bt-end"></div>
+        <div class="bt-field"><label>Strategy</label>
+          <select id="bt-strat"><option value="tjr">TJR-enhanced DCA</option><option value="standard">Standard DCA</option></select></div>
+        <button class="btn" id="bt-run">RUN BACKTEST</button>
+      </div>
+      <div class="bt-hint">Read-only — never writes the live ledger. Replays historical 5m BTC/ETH candles; compares interval-only DCA vs TJR-modulated DCA (5m history depth is limited, so keep the range recent — default 30 days).</div>
+      <div id="bt-progress" style="display:none"><div class="bt-bar-track"><div class="bt-bar" id="bt-bar"></div></div><div class="bt-msg" id="bt-msg"></div></div>
+      <div id="bt-error" style="display:none;color:var(--red);font-family:var(--mono);font-size:.62rem;padding:8px 0"></div>
+      <div id="bt-results" style="display:none">
+        <div class="bt-signals" id="bt-signals"></div>
+        <div class="bt-compare" id="bt-compare"></div>
+        <div class="metric-row" style="margin:12px 0 1px">
+          <div class="metric"><div class="k">Total Return</div><div class="v" id="bt-ret">—</div></div>
+          <div class="metric"><div class="k">Max Drawdown</div><div class="v" id="bt-dd">—</div></div>
+          <div class="metric"><div class="k">Sharpe</div><div class="v" id="bt-sharpe">—</div></div>
+        </div>
+        <div class="metric-row">
+          <div class="metric"><div class="k">Buys</div><div class="v" id="bt-buys">—</div></div>
+          <div class="metric"><div class="k">Win Rate</div><div class="v" id="bt-win">—</div></div>
+          <div class="metric"><div class="k">Profit Factor</div><div class="v" id="bt-pf">—</div></div>
+        </div>
+        <div class="bt-chart"><h4>EQUITY — STANDARD vs TJR</h4><div class="cw"><canvas id="bt-equity"></canvas></div></div>
+        <div class="bt-chart"><h4>DRAWDOWN (%) — SELECTED STRATEGY</h4><div class="cw"><canvas id="bt-dd-chart"></canvas></div></div>
+        <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--muted);letter-spacing:1px;margin:14px 0 6px">RECENT BUYS — SELECTED STRATEGY</h4>
+        <div class="table-wrap" style="max-height:240px"><table>
+          <thead><tr><th>Time (UTC)</th><th>Sym</th><th>Type</th><th>USD</th><th>Price</th><th>×</th></tr></thead>
+          <tbody id="bt-buylog"></tbody></table></div>
+      </div>
     </div>
   </div>
 </main>
@@ -440,6 +500,79 @@ function drawTJRChart(){
   });
 }
 window.addEventListener('resize', drawTJRChart);
+
+// ── TJR backtest ──────────────────────────────────────────────────────────
+let btEquityChart, btDDChart, BT_RESULT = null;
+(function(){ const t=new Date(), s=new Date(); s.setDate(t.getDate()-30);
+  $('bt-end').value = t.toISOString().slice(0,10); $('bt-start').value = s.toISOString().slice(0,10); })();
+
+$('bt-run').addEventListener('click', async () => {
+  $('bt-error').style.display='none'; $('bt-results').style.display='none';
+  $('bt-run').disabled=true; $('bt-progress').style.display='block'; $('bt-bar').style.width='5%'; $('bt-msg').textContent='Starting…';
+  try {
+    const res = await (await fetch('/api/tjr/backtest_run', { method:'POST', cache:'no-store',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({ start:$('bt-start').value, end:$('bt-end').value }) })).json();
+    if (!res.started){ btErr(res.reason||'Could not start'); return; }
+    btPoll();
+  } catch(e){ btErr('Request failed: '+e); }
+});
+function btErr(m){ $('bt-progress').style.display='none'; $('bt-run').disabled=false; const b=$('bt-error'); b.textContent='⚠ '+m; b.style.display='block'; }
+async function btPoll(){
+  try {
+    const s = await jget('/api/tjr/backtest_status');
+    const p = Math.round((s.progress||0)*100);
+    $('bt-bar').style.width = Math.max(5,p)+'%'; $('bt-msg').textContent = s.message||'Working…';
+    if (s.status==='done'){ $('bt-progress').style.display='none'; $('bt-run').disabled=false; BT_RESULT=s.result; renderBT(); return; }
+    if (s.status==='error'){ btErr(s.error||'Backtest failed'); return; }
+    setTimeout(btPoll, 1200);
+  } catch(e){ setTimeout(btPoll, 2000); }
+}
+$('bt-strat').addEventListener('change', () => { if (BT_RESULT) renderBT(); });
+
+function renderBT(){
+  const r = BT_RESULT; if (!r) return;
+  $('bt-results').style.display='block';
+  const sel = $('bt-strat').value, m = r[sel], sg = r.signals;
+  $('bt-signals').innerHTML = `Signals ${r.params.start} → ${r.params.end}: <b>${sg.mss_bull}</b> ▲ bullish MSS · <b>${sg.mss_bear}</b> ▼ bearish MSS · <b>${sg.fvg_fill}</b> FVG fills`;
+  $('bt-compare').innerHTML = ['standard','tjr'].map(k => {
+    const mm = r[k], isSel = k===sel;
+    return `<div class="bt-col ${isSel?'sel':''}"><div class="lbl">${k==='tjr'?'TJR-ENHANCED DCA':'STANDARD DCA'}${isSel?' · SELECTED':''}</div>
+      <div class="ret ${mm.total_return_pct>=0?'up':'down'}">${(mm.total_return_pct>=0?'+':'')+mm.total_return_pct.toFixed(2)}%</div>
+      <div style="font-size:.55rem;color:var(--muted)">$${mm.invested} invested · ${mm.num_buys} buys</div></div>`;
+  }).join('');
+  $('bt-ret').textContent = (m.total_return_pct>=0?'+':'')+m.total_return_pct.toFixed(2)+'%'; $('bt-ret').className='v '+(m.total_return_pct>=0?'up':'down');
+  $('bt-dd').textContent = m.max_drawdown_pct.toFixed(2)+'%';
+  $('bt-sharpe').textContent = (+m.sharpe).toFixed(2);
+  $('bt-buys').textContent = m.num_buys;
+  $('bt-win').textContent = m.win_rate+'%';
+  $('bt-pf').textContent = m.profit_factor==null ? '∞' : (+m.profit_factor).toFixed(2);
+  drawBTEquity(r.standard.equity_curve, r.tjr.equity_curve);
+  drawBTDD(m.drawdown_curve);
+  const tb = $('bt-buylog'), buys = [...m.buys].reverse();
+  tb.innerHTML = buys.length ? buys.map(b => `<tr>
+    <td style="color:var(--muted)">${String(b.timestamp).slice(0,16).replace('T',' ')}</td>
+    <td style="color:var(--gold)">${b.symbol}</td>
+    <td class="${b.type==='tjr_mss'?'t-mss':b.type==='tjr_fvg'?'t-fvg':'t-dca'}">${b.type}</td>
+    <td>${money(b.usd_amount)}</td><td>${money(b.price)}</td><td>×${(+b.multiplier).toFixed(1)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="empty">No buys</td></tr>';
+}
+const BTCHART = { color:'#C9D1D9', maintainAspectRatio:false, elements:{point:{radius:0}},
+  scales:{ x:{ticks:{color:'#4A5568',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(6,182,212,.06)'}},
+           y:{ticks:{color:'#4A5568',font:{size:9}},grid:{color:'rgba(6,182,212,.06)'}} } };
+function drawBTEquity(std, tjr){
+  if (btEquityChart) btEquityChart.destroy();
+  const labels = (tjr&&tjr.length?tjr:std).map(d=>d.date);
+  btEquityChart = new Chart($('bt-equity'), { type:'line', data:{ labels, datasets:[
+    { label:'Standard DCA', data:std.map(d=>d.equity), borderColor:'#8B949E', borderWidth:1.5, fill:false, tension:.2 },
+    { label:'TJR DCA', data:tjr.map(d=>d.equity), borderColor:'#F59E0B', backgroundColor:'rgba(245,158,11,.08)', borderWidth:2, fill:true, tension:.2 },
+  ]}, options:{ ...BTCHART, plugins:{ legend:{ display:true, labels:{ color:'#8B949E', font:{size:10}, boxWidth:8 } } } } });
+}
+function drawBTDD(dd){
+  if (btDDChart) btDDChart.destroy();
+  btDDChart = new Chart($('bt-dd-chart'), { type:'line', data:{ labels:dd.map(d=>d.date),
+    datasets:[{ label:'DD', data:dd.map(d=>d.drawdown), borderColor:'#F85149', backgroundColor:'rgba(248,81,73,.12)', borderWidth:1.5, fill:true, tension:.2 }] },
+    options:{ ...BTCHART, plugins:{ legend:{display:false} }, scales:{ ...BTCHART.scales, y:{ ...BTCHART.scales.y, max:0 } } } });
+}
 
 // ── Boot + bootstrap ──────────────────────────────────────────────────────
 (function boot(){
