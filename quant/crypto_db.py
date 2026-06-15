@@ -199,6 +199,21 @@ def get_recent_buys(limit: int = 50) -> list[dict]:
     return _query("SELECT * FROM tjr_buys ORDER BY id DESC LIMIT ?", (limit,))
 
 
+def get_sweeps_on(symbol: str, date: str) -> list[dict]:
+    return _query("SELECT * FROM tjr_sweeps WHERE symbol = ? AND timestamp LIKE ? ORDER BY id",
+                  (symbol, date + "%"))
+
+
+def get_mss_on(symbol: str, date: str) -> list[dict]:
+    return _query("SELECT * FROM tjr_mss WHERE symbol = ? AND timestamp LIKE ? ORDER BY id",
+                  (symbol, date + "%"))
+
+
+def fvg_exists(symbol: str, timestamp: str) -> bool:
+    return bool(_query("SELECT id FROM tjr_fvg WHERE symbol = ? AND timestamp = ? LIMIT 1",
+                       (symbol, timestamp)))
+
+
 def get_buys_since(date_prefix: str, symbol: str | None = None) -> list[dict]:
     """Buys whose timestamp starts with date_prefix (YYYY-MM-DD)."""
     if symbol:
