@@ -226,6 +226,48 @@ def api_tjr_portfolio():
     return jsonify(_crypto_bot.status())
 
 
+@app.route("/api/tjr/equity")
+def api_tjr_equity():
+    """Reconstructed daily paper-equity curve for the last N days (default 7),
+    for the portfolio sparkline. Read-only — derived from the tjr_buys ledger +
+    daily closes."""
+    try:
+        days = max(2, min(int(request.args.get("days", 7)), 60))
+    except (TypeError, ValueError):
+        days = 7
+    initial = 1000.0
+    end = datetime.now(timezone.utc).date()
+    closes = {}
+    for sym in tjr_strategy.SYMBOLS:
+        try:
+            closes[sym] = crypto_data.get_candles(sym, "1d", days + 3)
+        except Exception:
+            closes[sym] = []
+    buys = crypto_db.get_recent_buys(5000)
+
+    def price_on(sym, d):
+        best = None
+        for c in closes.get(sym, []):
+            cd = datetime.fromtimestamp(c["timestamp"], timezone.utc).date()
+            if cd <= d:
+                best = c["close"]
+        return best or 0.0
+
+    curve = []
+    for i in range(days):
+        d = end - timedelta(days=days - 1 - i)
+        diso = d.isoformat()
+        qty = {s: 0.0 for s in tjr_strategy.SYMBOLS}; invested = 0.0
+        for b in buys:
+            if str(b["timestamp"])[:10] <= diso and b["symbol"] in qty:
+                invested += b["usd_amount"]
+                if b["price"] > 0:
+                    qty[b["symbol"]] += b["usd_amount"] / b["price"]
+        val = sum(qty[s] * price_on(s, d) for s in tjr_strategy.SYMBOLS)
+        curve.append({"date": diso, "equity": round((initial - invested) + val, 2)})
+    return jsonify(curve)
+
+
 @app.route("/api/tjr/backtest_run", methods=["POST"])
 def api_tjr_backtest_run():
     """Kick off a read-only TJR backtest (standard vs TJR-enhanced DCA). Never
