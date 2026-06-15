@@ -17,9 +17,8 @@
 html { color-scheme: dark; }
 body {
   background: var(--bg);
-  background-image:
-    linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
+  background-image: linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
   background-size: 40px 40px;
   color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px; min-height: 100vh; overflow-x: hidden;
 }
@@ -30,6 +29,8 @@ body {
 @keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
 @keyframes pc-pulse { 0%,100%{opacity:.45} 50%{opacity:1} }
 @keyframes card-enter { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+@keyframes flash-g { 0%,100%{background:transparent} 50%{background:rgba(63,185,80,.16)} }
+@keyframes flash-r { 0%,100%{background:transparent} 50%{background:rgba(248,81,73,.16)} }
 
 .scanline-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 9998;
   background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.04) 1px,rgba(0,0,0,.04) 2px); }
@@ -41,42 +42,67 @@ body {
 
 header { position: sticky; top: 0; z-index: 200; display: flex; align-items: center; justify-content: space-between;
   padding: 10px 20px; gap: 12px; background: rgba(0,4,8,.96); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); }
-.hdr-left { display:flex; align-items:center; gap:10px; }
+.hdr-left { display:flex; align-items:center; gap:10px; flex-shrink:0; }
 .logo-text { font-family: var(--mono); font-size: .95rem; font-weight: 600; letter-spacing: 1px; color: var(--gold); text-shadow: 0 0 12px rgba(245,158,11,.5); }
 .pill { font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; padding: 3px 9px; border-radius: 2px; border:1px solid var(--border); color: var(--muted); }
-.hdr-right { display:flex; align-items:center; gap:8px; }
+.hdr-prices { display:flex; gap:18px; }
+.hp { font-family: var(--mono); font-size:.72rem; display:flex; align-items:center; gap:7px; }
+.hp .sym { color: var(--gold); font-weight:600; }
+.hp .px { color: var(--text); }
+.hp .chg { font-size:.62rem; }
+.hdr-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
 .hdr-clock { font-family: var(--mono); font-size: .7rem; color: var(--muted); letter-spacing: 1px; }
 .nav-link { font-family: var(--mono); font-size: .6rem; letter-spacing: 1px; color: var(--cyan); text-decoration: none; padding: 5px 12px; border: 1px solid rgba(6,182,212,.25); border-radius: 2px; }
 .nav-link:hover { background: rgba(6,182,212,.08); }
+.up { color: var(--green); } .down { color: var(--red); } .flat { color: var(--muted); }
 
 .ticker-section { position: sticky; top: 49px; z-index: 190; background: rgba(0,4,8,.98); border-bottom: 1px solid var(--border); }
 .ticker-bar { display: flex; align-items: center; overflow: hidden; height: 28px; position: relative; }
 .ticker-label { font-family: var(--mono); font-size: .55rem; font-weight: 700; letter-spacing: 3px; color: var(--gold); padding: 0 12px; border-right: 1px solid var(--border); white-space: nowrap; flex-shrink:0; height:100%; display:flex; align-items:center; }
 .ticker-wrap { flex: 1; overflow: hidden; }
-.ticker-track { display: inline-flex; align-items: center; white-space: nowrap; animation: ticker-scroll 48s linear infinite; }
+.ticker-track { display: inline-flex; align-items: center; white-space: nowrap; animation: ticker-scroll 40s linear infinite; }
 .tick-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 20px; font-family: var(--mono); font-size: .65rem; letter-spacing: 1px; }
 .tick-sym { color: var(--gold); font-weight: 600; }
-.tick-price { color: var(--text); }
-.tick-sub { color: var(--muted); }
 
 main { max-width: 1280px; margin: 0 auto; padding: 20px; }
-.grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+.grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; }
 @media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
 .card { background: var(--surf); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 16px; }
 .card-head { font-family: var(--mono); font-size: .6rem; font-weight: 700; letter-spacing: 2px; color: var(--cyan); padding: 11px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
 .card-head .accent { color: var(--gold); }
-.card-body { padding: 16px; }
-.row { display:flex; align-items:center; justify-content:space-between; padding: 8px 0; border-bottom: 1px dashed rgba(6,182,212,.08); font-family: var(--mono); font-size: .72rem; }
-.row:last-child { border-bottom: none; }
+.card-body { padding: 14px 16px; }
+.sym-block { padding: 10px 0; border-bottom: 1px dashed rgba(6,182,212,.08); }
+.sym-block:last-child { border-bottom: none; }
+.sym-tag { font-family: var(--mono); font-size: .68rem; letter-spacing: 2px; color: var(--gold); margin-bottom: 8px; display:flex; justify-content:space-between; }
+.sym-tag .px { color: var(--text); }
+.row { display:flex; align-items:center; justify-content:space-between; padding: 5px 0; font-family: var(--mono); font-size: .7rem; }
 .row .k { color: var(--muted); letter-spacing: 1px; }
 .row .v { color: var(--text); }
-.sym-tag { font-family: var(--mono); font-size: .6rem; letter-spacing: 2px; color: var(--gold); margin: 4px 0 8px; }
-.empty { font-family: var(--mono); font-size: .65rem; color: var(--muted); letter-spacing: 1px; padding: 14px 0; text-align:center; }
+.badge { font-family: var(--mono); font-size:.58rem; padding:2px 7px; border-radius:3px; letter-spacing:1px; }
+.b-swept { background: rgba(245,158,11,.15); color: var(--gold); }
+.b-none { background: rgba(74,85,104,.2); color: var(--muted); }
+.b-bull { background: rgba(63,185,80,.15); color: var(--green); }
+.b-bear { background: rgba(248,81,73,.15); color: var(--red); }
+.fvg-list { margin-top: 4px; }
+.fvg-item { display:flex; justify-content:space-between; font-family: var(--mono); font-size:.62rem; padding:3px 0; color: var(--muted); }
+.fvg-item .zone { color: var(--text); }
+.empty { font-family: var(--mono); font-size: .62rem; color: var(--muted); letter-spacing: 1px; padding: 8px 0; }
+
 .metric-row { display:grid; grid-template-columns: repeat(3,1fr); gap:1px; background: var(--border); }
 .metric { background: var(--surf2); padding: 14px; }
 .metric .k { font-family: var(--mono); font-size:.5rem; letter-spacing:2px; color: var(--muted); text-transform:uppercase; }
 .metric .v { font-family: var(--mono); font-size:1.1rem; font-weight:600; margin-top:6px; }
-.scaffold { font-family: var(--mono); font-size:.55rem; letter-spacing:2px; color: var(--purple); }
+
+.filters { display:flex; gap:6px; }
+.fbtn { font-family: var(--mono); font-size:.55rem; letter-spacing:1px; padding:3px 9px; border-radius:3px; border:1px solid var(--border); background:none; color:var(--muted); cursor:pointer; }
+.fbtn.active { border-color: var(--gold); color: var(--gold); background: rgba(245,158,11,.08); }
+.table-wrap { overflow-x:auto; max-height: 360px; overflow-y:auto; }
+table { width:100%; border-collapse:collapse; font-size:.66rem; }
+th { text-align:left; padding:8px 12px; font-family:var(--mono); font-size:.5rem; letter-spacing:1px; color:var(--muted); text-transform:uppercase; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--surf); }
+th:not(:first-child), td:not(:first-child){ text-align:right; }
+td { padding:7px 12px; border-bottom:1px solid rgba(6,182,212,.06); font-family:var(--mono); white-space:nowrap; }
+tr:last-child td { border-bottom:none; }
+.t-mss { color: var(--green); } .t-fvg { color: var(--cyan); } .t-dca { color: var(--muted); }
 
 footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; color: var(--muted); }
 
@@ -101,7 +127,10 @@ footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: 
   <div class="hdr-left">
     <span class="logo-text">₿ CRYPTO BOT</span>
     <span class="pill">TJR SMART MONEY</span>
-    <span class="pill" id="src-pill">SRC —</span>
+  </div>
+  <div class="hdr-prices">
+    <span class="hp"><span class="sym">BTC</span><span class="px" id="hp-btc">$—</span><span class="chg" id="hc-btc">—</span></span>
+    <span class="hp"><span class="sym">ETH</span><span class="px" id="hp-eth">$—</span><span class="chg" id="hc-eth">—</span></span>
   </div>
   <div class="hdr-right">
     <span class="hdr-clock" id="clock">--:--:-- UTC</span>
@@ -122,48 +151,48 @@ footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: 
     <!-- LEFT: TJR strategy -->
     <div>
       <div class="card">
-        <div class="card-head">> CRYPTO BOT <span class="accent">STRATEGY</span> — TJR / ICT <span class="scaffold">SCAFFOLD · PHASE 1</span></div>
-        <div class="card-body">
-          <div class="sym-tag">◆ BTC-USD</div>
-          <div class="row"><span class="k">ASIA RANGE</span><span class="v" id="btc-asia">— / —</span></div>
-          <div class="row"><span class="k">SWEEP STATUS</span><span class="v" id="btc-sweep">awaiting data</span></div>
-          <div class="row"><span class="k">LATEST MSS</span><span class="v" id="btc-mss">—</span></div>
-          <div class="row"><span class="k">ACTIVE FVGs</span><span class="v" id="btc-fvg">—</span></div>
-          <div style="height:14px"></div>
-          <div class="sym-tag">◆ ETH-USD</div>
-          <div class="row"><span class="k">ASIA RANGE</span><span class="v" id="eth-asia">— / —</span></div>
-          <div class="row"><span class="k">SWEEP STATUS</span><span class="v" id="eth-sweep">awaiting data</span></div>
-          <div class="row"><span class="k">LATEST MSS</span><span class="v" id="eth-mss">—</span></div>
-          <div class="row"><span class="k">ACTIVE FVGs</span><span class="v" id="eth-fvg">—</span></div>
+        <div class="card-head"><span>> CRYPTO BOT <span class="accent">STRATEGY</span> — TJR / ICT</span>
+          <span class="pill" id="session-pill">SESSION —</span></div>
+        <div class="card-body" id="tjr-body">
+          <div class="empty">Loading TJR state…</div>
         </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">> TJR CHART <span class="scaffold">PHASE 8</span></div>
-        <div class="card-body"><div class="empty">Candlestick + TJR overlays land in Phase 8.</div></div>
       </div>
     </div>
 
-    <!-- RIGHT: portfolio + buys -->
+    <!-- RIGHT: portfolio -->
     <div>
       <div class="card">
         <div class="card-head">> PAPER PORTFOLIO</div>
         <div class="metric-row">
           <div class="metric"><div class="k">Balance</div><div class="v" id="pf-balance">$—</div></div>
           <div class="metric"><div class="k">Equity</div><div class="v" id="pf-equity">$—</div></div>
-          <div class="metric"><div class="k">P&amp;L</div><div class="v" id="pf-pnl">—</div></div>
+          <div class="metric"><div class="k">Total P&amp;L</div><div class="v" id="pf-pnlpct">—</div></div>
         </div>
         <div class="card-body">
           <div class="row"><span class="k">BTC HOLDINGS</span><span class="v" id="pf-btc">—</span></div>
           <div class="row"><span class="k">ETH HOLDINGS</span><span class="v" id="pf-eth">—</span></div>
-          <div class="row"><span class="k">TODAY'S TJR BUYS</span><span class="v" id="pf-buys">—</span></div>
+          <div class="row"><span class="k">UNREALISED P&amp;L</span><span class="v" id="pf-pnl">—</span></div>
+          <div class="row"><span class="k">TODAY'S TJR BUYS</span><span class="v" id="pf-today">—</span></div>
         </div>
       </div>
+    </div>
+  </div>
 
-      <div class="card">
-        <div class="card-head">> BUY LOG <span class="scaffold">PHASE 4</span></div>
-        <div class="card-body"><div class="empty" id="buy-log">DCA bot + buy ledger arrive in Phase 4.</div></div>
+  <!-- Buy log -->
+  <div class="card">
+    <div class="card-head"><span>> BUY LOG</span>
+      <div class="filters" id="filters">
+        <button class="fbtn active" data-f="all">ALL</button>
+        <button class="fbtn" data-f="tjr_mss">MSS ×2.5</button>
+        <button class="fbtn" data-f="tjr_fvg">FVG ×1.5</button>
+        <button class="fbtn" data-f="dca_interval">DCA ×1.0</button>
       </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time (UTC)</th><th>Symbol</th><th>Type</th><th>USD</th><th>Price</th><th>×</th></tr></thead>
+        <tbody id="buy-body"><tr><td colspan="6" class="empty">No buys yet</td></tr></tbody>
+      </table>
     </div>
   </div>
 </main>
@@ -171,26 +200,145 @@ footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: 
 <footer>CRYPTO BOT · TJR SMART MONEY CONCEPTS · PAPER TRADING ONLY · NOT FINANCIAL ADVICE</footer>
 
 <script>
-function tickClock(){ document.getElementById('clock').textContent = new Date().toUTCString().slice(17,25) + ' UTC'; }
+const $ = id => document.getElementById(id);
+const NOSTORE = { cache:'no-store' };
+const jget = async u => (await fetch(u + (u.includes('?')?'&':'?') + '_t=' + Date.now(), NOSTORE)).json();
+const money = n => (n==null||isNaN(n)) ? '—' : (n<0?'-$':'$') + Math.abs(+n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const SYMS = ['BTC','ETH'];
+let LIVE = { BTC:0, ETH:0 };
+let BUYS = [];        // buy events from history
+let filter = 'all';
+
+function tickClock(){ $('clock').textContent = new Date().toUTCString().slice(17,25) + ' UTC'; }
 tickClock(); setInterval(tickClock, 1000);
 
-// Placeholder ticker until live crypto feed is wired (Phase 7/8).
-const TICK = [['BTC','BTC-USD'],['ETH','ETH-USD'],['SESSION','ASIA · LONDON · NY'],['STRATEGY','SWEEP · MSS · FVG']];
-document.getElementById('ticker-track').innerHTML =
-  [...TICK,...TICK].map(([s,sub])=>`<span class="tick-item"><span class="tick-sym">${s}</span><span class="tick-price" id="tk-${s}">—</span><span class="tick-sub">${sub}</span></span>`).join('');
+// ── Prices + 24h change (every 5s) ────────────────────────────────────────
+async function refreshPrices(){
+  for (const sym of SYMS){
+    try {
+      const c = await jget(`/api/tjr/candles?symbol=${sym}&interval=5m&limit=300`);
+      if (!Array.isArray(c) || !c.length) continue;
+      const last = +c[c.length-1].close;
+      LIVE[sym] = last;
+      const ago = c[Math.max(0, c.length-1-288)];          // ~24h ago (288×5m)
+      const chg = ago ? (last/ago.close - 1)*100 : 0;
+      $('hp-'+sym.toLowerCase()).textContent = money(last);
+      const ce = $('hc-'+sym.toLowerCase());
+      ce.textContent = (chg>=0?'+':'') + chg.toFixed(2) + '%';
+      ce.className = 'chg ' + (chg>0.01?'up':chg<-0.01?'down':'flat');
+    } catch(e){}
+  }
+  renderTicker();
+}
+function renderTicker(){
+  const items = SYMS.map(s => `<span class="tick-item"><span class="tick-sym">${s}-USD</span><span>${money(LIVE[s])}</span></span>`);
+  const all = [...items, ...items, ...items, ...items];
+  $('ticker-track').innerHTML = all.join('');
+}
 
+// ── TJR strategy state (every 10s) ────────────────────────────────────────
+async function refreshStatus(){
+  try {
+    const [st, fvgs] = await Promise.all([ jget('/api/tjr/status'), jget('/api/tjr/fvgs') ]);
+    $('session-pill').textContent = st.in_session ? 'SESSION ACTIVE' : 'SESSION CLOSED';
+    $('session-pill').style.color = st.in_session ? 'var(--green)' : 'var(--muted)';
+    const byFvg = { BTC:[], ETH:[] };
+    (fvgs||[]).forEach(f => { if (byFvg[f.symbol]) byFvg[f.symbol].push(f); });
+
+    $('tjr-body').innerHTML = SYMS.map(sym => {
+      const s = (st.symbols||{})[sym] || {};
+      const mss = s.latest_mss;
+      const mssHtml = mss
+        ? `<span class="badge ${mss.direction==='bull'?'b-bull':'b-bear'}">${mss.direction==='bull'?'▲ BULLISH':'▼ BEARISH'}</span> <span class="v">${money(mss.price)}</span> <span style="color:var(--muted)">${(mss.time||'').slice(11,16)} UTC</span>`
+        : '<span class="badge b-none">none</span>';
+      const sweepCls = (s.sweep_status && s.sweep_status!=='no sweep yet') ? 'b-swept' : 'b-none';
+      const fvgs2 = byFvg[sym] || [];
+      const fvgHtml = fvgs2.length
+        ? fvgs2.map(f => `<div class="fvg-item"><span class="${f.direction==='bull'?'up':'down'}">${f.direction==='bull'?'▲':'▼'} ${f.direction}</span><span class="zone">${money(f.bottom_price)} – ${money(f.top_price)}</span></div>`).join('')
+        : '<div class="empty">no active FVG zones</div>';
+      return `<div class="sym-block">
+        <div class="sym-tag"><span>◆ ${sym}-USD</span><span class="px">${money(LIVE[sym])}</span></div>
+        <div class="row"><span class="k">ASIA RANGE (H/L)</span><span class="v">${s.asia_high!=null?money(s.asia_high):'—'} / ${s.asia_low!=null?money(s.asia_low):'—'}</span></div>
+        <div class="row"><span class="k">SWEEP STATUS</span><span class="badge ${sweepCls}">${(s.sweep_status||'no sweep yet').toUpperCase()}</span></div>
+        <div class="row"><span class="k">LATEST MSS</span><span class="v">${mssHtml}</span></div>
+        <div class="row"><span class="k">ACTIVE FVGs</span><span class="v">${s.active_fvg_count||0}</span></div>
+        <div class="fvg-list">${fvgHtml}</div>
+      </div>`;
+    }).join('');
+  } catch(e){ console.error('status', e); }
+}
+
+// ── Portfolio (every 10s) ─────────────────────────────────────────────────
+async function refreshPortfolio(){
+  try {
+    const p = await jget('/api/tjr/portfolio');
+    if (p.error){ $('pf-balance').textContent = 'bot offline'; return; }
+    const px = s => LIVE[s] || (p.prices||{})[s] || 0;
+    const btcVal = (p.holdings.BTC||0) * px('BTC');
+    const ethVal = (p.holdings.ETH||0) * px('ETH');
+    const equity = p.balance + btcVal + ethVal;
+    const pnl = equity - p.initial_balance;
+    const pnlPct = p.initial_balance ? (pnl/p.initial_balance*100) : 0;
+    $('pf-balance').textContent = money(p.balance);
+    $('pf-equity').textContent  = money(equity);
+    $('pf-pnlpct').textContent  = (pnlPct>=0?'+':'') + pnlPct.toFixed(2) + '%';
+    $('pf-pnlpct').className = 'v ' + (pnl>=0?'up':'down');
+    $('pf-btc').innerHTML = `${(p.holdings.BTC||0).toFixed(6)} <span style="color:var(--muted)">(${money(btcVal)})</span>`;
+    $('pf-eth').innerHTML = `${(p.holdings.ETH||0).toFixed(6)} <span style="color:var(--muted)">(${money(ethVal)})</span>`;
+    $('pf-pnl').innerHTML = `<span class="${pnl>=0?'up':'down'}">${money(pnl)}</span>`;
+  } catch(e){ console.error('portfolio', e); }
+}
+
+// ── History → buy log + today's buys (every 10s) ──────────────────────────
+async function refreshHistory(){
+  try {
+    const ev = await jget('/api/tjr/history');
+    BUYS = (ev||[]).filter(e => (e.type||'').startsWith('buy_'))
+                   .map(e => ({ ...e, btype: e.type.replace('buy_','') }));
+    // today's buys
+    const today = new Date().toISOString().slice(0,10);
+    const todays = BUYS.filter(b => String(b.timestamp).slice(0,10) === today);
+    const totUsd = todays.reduce((a,b)=>a+(+b.usd_amount||0),0);
+    $('pf-today').textContent = `${todays.length} ($${totUsd.toFixed(2)})`;
+    renderBuys();
+  } catch(e){ console.error('history', e); }
+}
+function renderBuys(){
+  const rows = BUYS.filter(b => filter==='all' || b.btype===filter).slice(0,20);
+  const tb = $('buy-body');
+  if (!rows.length){ tb.innerHTML = '<tr><td colspan="6" class="empty">No buys for this filter</td></tr>'; return; }
+  const cls = t => t==='tjr_mss'?'t-mss':t==='tjr_fvg'?'t-fvg':'t-dca';
+  tb.innerHTML = rows.map(b => `<tr>
+    <td style="color:var(--muted)">${String(b.timestamp).slice(0,19).replace('T',' ')}</td>
+    <td style="color:var(--gold)">${b.symbol}</td>
+    <td class="${cls(b.btype)}">${b.btype}</td>
+    <td>${money(b.usd_amount)}</td>
+    <td>${money(b.price)}</td>
+    <td>×${(+b.multiplier||1).toFixed(1)}</td></tr>`).join('');
+}
+document.querySelectorAll('.fbtn').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active'); filter = btn.dataset.f; renderBuys();
+}));
+
+// ── Boot + bootstrap ──────────────────────────────────────────────────────
 (function boot(){
-  const overlay = document.getElementById('boot-overlay');
+  const overlay = $('boot-overlay');
   const cards = Array.from(document.querySelectorAll('.card'));
   cards.forEach(el=>el.style.opacity='0');
   const reveal = () => cards.forEach((el,i)=>{ el.style.opacity=''; el.style.animation=`card-enter .5s ease ${(i*0.07).toFixed(2)}s both`; });
-  const lines = ['CRYPTO BOT v0.1','TJR ENGINE: STANDBY','DATA SOURCE: CONNECTING...','PANELS: SCAFFOLDED'];
-  const full = lines.join('\n'); let i=0;
-  const el = document.getElementById('boot-text');
+  const lines = ['CRYPTO BOT v1.0','TJR ENGINE: ONLINE','DATA FEED: '+'CONNECTING...','PANELS: LIVE'];
+  const full = lines.join('\n'); let i=0; const el = $('boot-text');
   const dismiss = () => { overlay.style.opacity='0'; setTimeout(()=>{ overlay.style.display='none'; reveal(); }, 500); };
   overlay.addEventListener('click', dismiss);
   const iv = setInterval(()=>{ i++; el.textContent=full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,600); } }, 22);
 })();
+
+refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory();
+setInterval(refreshPrices, 5000);
+setInterval(refreshStatus, 10000);
+setInterval(refreshPortfolio, 10000);
+setInterval(refreshHistory, 10000);
 </script>
 </body>
 </html>
