@@ -189,6 +189,12 @@ def get_active_fvgs(symbol: str, limit: int = 20) -> list[dict]:
                   f"ORDER BY id DESC LIMIT ?", (symbol, limit))
 
 
+def get_recent_fvgs(symbol: str, limit: int = 40) -> list[dict]:
+    """Recent FVGs (active AND filled) for chart overlays."""
+    return _query("SELECT * FROM tjr_fvg WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                  (symbol, limit))
+
+
 def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0):
     return _insert("""INSERT INTO tjr_buys (timestamp, symbol, type, usd_amount, price, multiplier)
                       VALUES (?, ?, ?, ?, ?, ?)""",

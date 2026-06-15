@@ -104,6 +104,12 @@ td { padding:7px 12px; border-bottom:1px solid rgba(6,182,212,.06); font-family:
 tr:last-child td { border-bottom:none; }
 .t-mss { color: var(--green); } .t-fvg { color: var(--cyan); } .t-dca { color: var(--muted); }
 
+.chart-wrap { position:relative; height: 360px; padding: 8px 8px 0; }
+.chart-wrap canvas { width:100% !important; height:100% !important; display:block; }
+.chart-legend { display:flex; flex-wrap:wrap; gap:14px; padding:8px 16px 12px; font-family:var(--mono); font-size:.55rem; color:var(--muted); letter-spacing:1px; }
+.chart-legend span { display:inline-flex; align-items:center; }
+.chart-legend i.lg { display:inline-block; width:14px; height:9px; border-radius:2px; margin-right:5px; }
+
 footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; color: var(--muted); }
 
 #boot-overlay { position: fixed; inset: 0; z-index: 99999; background: #000408; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; transition: opacity .5s; }
@@ -178,6 +184,25 @@ footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: 
     </div>
   </div>
 
+  <!-- TJR chart -->
+  <div class="card">
+    <div class="card-head"><span>> TJR CHART — <span class="accent" id="chart-sym-label">BTC</span>-USD · 5M</span>
+      <div class="filters" id="chart-syms">
+        <button class="fbtn active" data-s="BTC">BTC</button>
+        <button class="fbtn" data-s="ETH">ETH</button>
+      </div>
+    </div>
+    <div class="chart-wrap"><canvas id="tjr-chart"></canvas></div>
+    <div class="chart-legend">
+      <span><i class="lg" style="background:rgba(6,182,212,.18)"></i>Asia 20:00–00:00</span>
+      <span><i class="lg" style="background:rgba(63,185,80,.12)"></i>Trading 03:00–13:00</span>
+      <span><i class="lg" style="background:rgba(63,185,80,.25)"></i>Bull FVG</span>
+      <span><i class="lg" style="background:rgba(248,81,73,.25)"></i>Bear FVG</span>
+      <span><i class="lg" style="background:rgba(120,130,140,.3)"></i>Filled FVG</span>
+      <span style="color:var(--green)">▲ MSS</span><span style="color:var(--red)">▼ MSS</span>
+    </div>
+  </div>
+
   <!-- Buy log -->
   <div class="card">
     <div class="card-head"><span>> BUY LOG</span>
@@ -208,6 +233,11 @@ const SYMS = ['BTC','ETH'];
 let LIVE = { BTC:0, ETH:0 };
 let BUYS = [];        // buy events from history
 let filter = 'all';
+let STATUS = {};      // per-symbol TJR state (asia range, mss, etc.)
+let FVGS = [];        // active + filled FVG zones (for the chart)
+let MSS_EV = [];      // MSS events from history (chart markers)
+let CHART = { BTC:[], ETH:[] };   // candles per symbol for the chart
+let chartSym = 'BTC';
 
 function tickClock(){ $('clock').textContent = new Date().toUTCString().slice(17,25) + ' UTC'; }
 tickClock(); setInterval(tickClock, 1000);
@@ -239,11 +269,13 @@ function renderTicker(){
 // ── TJR strategy state (every 10s) ────────────────────────────────────────
 async function refreshStatus(){
   try {
-    const [st, fvgs] = await Promise.all([ jget('/api/tjr/status'), jget('/api/tjr/fvgs') ]);
+    const [st, fvgs] = await Promise.all([ jget('/api/tjr/status'), jget('/api/tjr/fvgs?include_filled=1') ]);
+    STATUS = st.symbols || {};
+    FVGS = fvgs || [];
     $('session-pill').textContent = st.in_session ? 'SESSION ACTIVE' : 'SESSION CLOSED';
     $('session-pill').style.color = st.in_session ? 'var(--green)' : 'var(--muted)';
     const byFvg = { BTC:[], ETH:[] };
-    (fvgs||[]).forEach(f => { if (byFvg[f.symbol]) byFvg[f.symbol].push(f); });
+    (fvgs||[]).filter(f => !f.filled).forEach(f => { if (byFvg[f.symbol]) byFvg[f.symbol].push(f); });
 
     $('tjr-body').innerHTML = SYMS.map(sym => {
       const s = (st.symbols||{})[sym] || {};
@@ -265,6 +297,7 @@ async function refreshStatus(){
         <div class="fvg-list">${fvgHtml}</div>
       </div>`;
     }).join('');
+    drawTJRChart();   // overlays update live as sweeps/MSS/FVG change
   } catch(e){ console.error('status', e); }
 }
 
@@ -295,6 +328,8 @@ async function refreshHistory(){
     const ev = await jget('/api/tjr/history');
     BUYS = (ev||[]).filter(e => (e.type||'').startsWith('buy_'))
                    .map(e => ({ ...e, btype: e.type.replace('buy_','') }));
+    MSS_EV = (ev||[]).filter(e => String(e.type).startsWith('mss_'));
+    drawTJRChart();
     // today's buys
     const today = new Date().toISOString().slice(0,10);
     const todays = BUYS.filter(b => String(b.timestamp).slice(0,10) === today);
@@ -316,10 +351,95 @@ function renderBuys(){
     <td>${money(b.price)}</td>
     <td>×${(+b.multiplier||1).toFixed(1)}</td></tr>`).join('');
 }
-document.querySelectorAll('.fbtn').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active'));
+document.querySelectorAll('#filters .fbtn').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('#filters .fbtn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active'); filter = btn.dataset.f; renderBuys();
 }));
+
+// ── TJR chart (canvas, hand-drawn like the scanner's detail chart) ────────
+document.querySelectorAll('#chart-syms .fbtn').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('#chart-syms .fbtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active'); chartSym = btn.dataset.s;
+  $('chart-sym-label').textContent = chartSym;
+  refreshChartCandles();
+}));
+
+async function refreshChartCandles(){
+  try {
+    const c = await jget(`/api/tjr/candles?symbol=${chartSym}&interval=5m&limit=240`);
+    if (Array.isArray(c)) CHART[chartSym] = c;
+    drawTJRChart();
+  } catch(e){ console.error('chart candles', e); }
+}
+
+function drawTJRChart(){
+  const canvas = $('tjr-chart'); if (!canvas) return;
+  const candles = CHART[chartSym] || [];
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (!W || !H) return;
+  canvas.width = W*dpr; canvas.height = H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.font = '9px JetBrains Mono';
+  if (!candles.length){ ctx.fillStyle='#4A5568'; ctx.textAlign='center'; ctx.fillText('Loading candles…', W/2, H/2); return; }
+
+  const pad = { l:8, r:66, t:10, b:18 };
+  const n = candles.length, plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const st = STATUS[chartSym] || {};
+  let lo=Infinity, hi=-Infinity;
+  candles.forEach(c=>{ lo=Math.min(lo,c.low); hi=Math.max(hi,c.high); });
+  [st.asia_high, st.asia_low].forEach(v=>{ if(v!=null){ lo=Math.min(lo,v); hi=Math.max(hi,v); } });
+  FVGS.filter(f=>f.symbol===chartSym).forEach(f=>{ lo=Math.min(lo,f.bottom_price); hi=Math.max(hi,f.top_price); });
+  const sp=(hi-lo)||1; lo-=sp*0.05; hi+=sp*0.05;
+  const x = i => pad.l + (n<=1?0:(i/(n-1))*plotW);
+  const y = p => pad.t + (1-(p-lo)/(hi-lo))*plotH;
+  const cw = n>1 ? plotW/(n-1) : plotW;
+  const t0 = candles[0].timestamp, t1 = candles[n-1].timestamp;
+  const xForTs = ts => { let best=0, bd=Infinity; for(let i=0;i<n;i++){ const d=Math.abs(candles[i].timestamp-ts); if(d<bd){bd=d;best=i;} } return x(best); };
+
+  // 1) Session shading by UTC hour
+  for (let i=0;i<n;i++){
+    const h = new Date(candles[i].timestamp*1000).getUTCHours();
+    let col = h>=20 ? 'rgba(6,182,212,.10)' : (h>=3 && h<13 ? 'rgba(63,185,80,.06)' : null);
+    if (col){ ctx.fillStyle=col; ctx.fillRect(x(i)-cw/2, pad.t, cw, plotH); }
+  }
+  // 2) FVG zones (from forming time to right edge)
+  FVGS.filter(f=>f.symbol===chartSym).forEach(f=>{
+    const ts = Date.parse(f.timestamp)/1000;
+    const x0 = Math.max(pad.l, xForTs(ts)), x1 = W-pad.r;
+    const yt = y(f.top_price), yb = y(f.bottom_price);
+    ctx.fillStyle = f.filled ? 'rgba(120,130,140,.22)' : (f.direction==='bull' ? 'rgba(63,185,80,.18)' : 'rgba(248,81,73,.18)');
+    ctx.fillRect(x0, yt, Math.max(2, x1-x0), Math.max(1, yb-yt));
+  });
+  // 3) Asia high/low dashed lines + labels
+  ctx.setLineDash([4,4]); ctx.lineWidth=1; ctx.textAlign='left';
+  if (st.asia_high!=null){ ctx.strokeStyle='rgba(245,158,11,.65)'; ctx.beginPath(); ctx.moveTo(pad.l,y(st.asia_high)); ctx.lineTo(W-pad.r,y(st.asia_high)); ctx.stroke(); ctx.fillStyle='#F59E0B'; ctx.fillText('Asia High', W-pad.r+3, y(st.asia_high)-2); }
+  if (st.asia_low!=null){ ctx.strokeStyle='rgba(6,182,212,.65)'; ctx.beginPath(); ctx.moveTo(pad.l,y(st.asia_low)); ctx.lineTo(W-pad.r,y(st.asia_low)); ctx.stroke(); ctx.fillStyle='#06B6D4'; ctx.fillText('Asia Low', W-pad.r+3, y(st.asia_low)+9); }
+  ctx.setLineDash([]);
+  // 4) Candles
+  const bw = Math.max(1.5, Math.min(7, cw*0.62));
+  for (let i=0;i<n;i++){
+    const c=candles[i], cx=x(i), up=c.close>=c.open;
+    ctx.strokeStyle = up?'#3FB950':'#F85149'; ctx.fillStyle = up?'#3FB950':'#F85149';
+    ctx.beginPath(); ctx.moveTo(cx,y(c.high)); ctx.lineTo(cx,y(c.low)); ctx.stroke();
+    const yo=y(c.open), yc=y(c.close);
+    ctx.fillRect(cx-bw/2, Math.min(yo,yc), bw, Math.max(1,Math.abs(yc-yo)));
+  }
+  // 5) Price axis (right)
+  ctx.fillStyle='#4A5568'; ctx.textAlign='left';
+  for (let k=0;k<=4;k++){ const p=lo+(hi-lo)*k/4; ctx.fillText(p.toFixed(0), W-pad.r+3, y(p)+3); }
+  // 6) MSS markers (within window)
+  MSS_EV.filter(m=>m.symbol===chartSym).forEach(m=>{
+    const ts = Date.parse(m.timestamp)/1000;
+    if (ts < t0-300 || ts > t1+300) return;
+    const mx = xForTs(ts), my = y(m.price), bull = m.type==='mss_bull';
+    ctx.textAlign='center'; ctx.fillStyle = bull?'#3FB950':'#F85149';
+    ctx.font='bold 11px JetBrains Mono'; ctx.fillText(bull?'▲':'▼', mx, bull?my+15:my-7);
+    ctx.font='7px JetBrains Mono'; ctx.fillText('MSS', mx, bull?my+25:my-17);
+  });
+}
+window.addEventListener('resize', drawTJRChart);
 
 // ── Boot + bootstrap ──────────────────────────────────────────────────────
 (function boot(){
@@ -334,11 +454,12 @@ document.querySelectorAll('.fbtn').forEach(btn => btn.addEventListener('click', 
   const iv = setInterval(()=>{ i++; el.textContent=full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,600); } }, 22);
 })();
 
-refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory();
+refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory(); refreshChartCandles();
 setInterval(refreshPrices, 5000);
 setInterval(refreshStatus, 10000);
 setInterval(refreshPortfolio, 10000);
 setInterval(refreshHistory, 10000);
+setInterval(refreshChartCandles, 300000);   // candles every 5 min; overlays redraw on each status/history tick
 </script>
 </body>
 </html>

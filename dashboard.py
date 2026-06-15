@@ -166,12 +166,17 @@ def api_tjr_status():
 
 @app.route("/api/tjr/fvgs")
 def api_tjr_fvgs():
-    """All active (unfilled) FVG zones across symbols."""
+    """Active (unfilled) FVG zones across symbols. With ?include_filled=1 it also
+    returns recently filled zones (each tagged filled) for the chart's grey
+    boxes — the default stays active-only so the strategy card is unaffected."""
+    include_filled = request.args.get("include_filled") in ("1", "true")
     out = []
     for sym in tjr_strategy.SYMBOLS:
-        for f in crypto_db.get_active_fvgs(sym, 20):
+        rows = crypto_db.get_recent_fvgs(sym, 40) if include_filled else crypto_db.get_active_fvgs(sym, 20)
+        for f in rows:
             out.append({"symbol": sym, "direction": f["direction"],
                         "top_price": f["top_price"], "bottom_price": f["bottom_price"],
+                        "filled": bool(f["filled"]), "filled_at": f.get("filled_at"),
                         "timestamp": f["timestamp"], "created_at": str(f["created_at"])})
     return jsonify(out)
 
