@@ -53,19 +53,11 @@ _REGIME_BARS    = 50         # SPY bars the regime filter needs (SMA50) — a fl
 _WARMUP_MARGIN  = 25         # extra calendar days of cushion on top of the warmup
 _HOURLY_WINDOW  = 300        # trailing hourly bars used for the 1H entry signal
 
-# vol_conviction sizing mode
-_RISK_PER_TRADE = 0.01       # fixed 1% of equity risked per position
-_ATR_STOP_MULT  = 2.0        # sizing assumes a 2×ATR stop distance
-_MAX_POS_PCT    = 0.20       # hard cap: no single position above 20% of equity
-
-# trail_only exit mode
-_ATR_TRAIL_MULT = 3.0        # trail 3×ATR below the high-water mark
-_MAX_HOLD_TRAIL = 15         # extended max-hold so winners have room to run
-
-
-def _conviction_mult(rank: int) -> float:
-    """Position multiplier by momentum rank: 1st 1.5×, 2nd 1.25×, 3rd+ 1.0×."""
-    return {1: 1.5, 2: 1.25}.get(rank, 1.0)
+# Sizing/exit parameters live in strategies.py so the backtester and the live
+# bot share one source of truth (aliased here for readability).
+_ATR_STOP_MULT  = strategies.ATR_STOP_MULT
+_ATR_TRAIL_MULT = strategies.ATR_TRAIL_MULT
+_MAX_HOLD_TRAIL = strategies.MAX_HOLD_TRAIL
 
 
 def _warmup_calendar_days(warmup_bars: int) -> int:
@@ -403,17 +395,17 @@ def _run(start_date: str, end_date: str, capital: float, mode: str,
                 return strategies.position_size_usd(cash, regime)
 
             atr_v    = opp.get("_atr")
+            rank     = opp.get("_rank", 99)
             entry_px = fill_open * (1 + SLIPPAGE)
-            if not atr_v or atr_v <= 0 or entry_px <= 0:
+            # Same shared sizing the live bot uses (single source of truth).
+            final_size = strategies.vol_conviction_size(equity_now, cash, entry_px, atr_v, rank)
+            if final_size <= 0:
                 return strategies.position_size_usd(cash, regime)   # safe fallback
 
-            stop_dist  = _ATR_STOP_MULT * atr_v
-            risk_usd   = _RISK_PER_TRADE * equity_now
-            base_size  = risk_usd / (stop_dist / entry_px)     # risk_usd · entry_px / stop_dist
-            mult       = _conviction_mult(opp.get("_rank", 99))
-            final_size = min(base_size * mult, _MAX_POS_PCT * equity_now, cash)
+            stop_dist = _ATR_STOP_MULT * atr_v
+            base_size = (strategies.RISK_PER_TRADE * equity_now) * entry_px / stop_dist
             print(f"[SIZING] symbol={sym} atr={atr_v:.4f} stop_dist={stop_dist:.4f} "
-                  f"base_size={base_size:.2f} conviction_mult={mult} "
+                  f"base_size={base_size:.2f} conviction_mult={strategies.conviction_mult(rank)} "
                   f"final_size={final_size:.2f}", flush=True)
             return final_size
 
@@ -637,7 +629,7 @@ def _metrics(initial: float, final_balance: float, equity_curve: list[dict],
 
     sizing_label = (
         f"vol-scaled conviction (1% risk · {_ATR_STOP_MULT:g}×ATR stop · "
-        f"rank 1.5/1.25/1.0× · ≤{int(_MAX_POS_PCT*100)}% cap)"
+        f"rank 1.5/1.25/1.0× · ≤{int(strategies.MAX_POSITION_PCT*100)}% cap)"
         if sizing == "vol_conviction"
         else f"flat ({config.TRADE_SIZE_PCT*100:g}% of cash)"
     )

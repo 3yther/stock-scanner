@@ -137,10 +137,10 @@ class StockPaperTrader:
     #  Trade execution                                                     #
     # ------------------------------------------------------------------ #
 
-    def _execute_buy(self, symbol: str, price: float, regime: str = "NEUTRAL"):
+    def _execute_buy(self, symbol: str, price: float, regime: str = "NEUTRAL", rank: int = 99):
         if symbol in self.positions:
             return
-        if len(self.positions) >= config.MAX_POSITIONS:
+        if len(self.positions) >= config.LIVE_MAX_POSITIONS:
             return
         if price <= 0:
             return
@@ -151,9 +151,22 @@ class StockPaperTrader:
             print(f"  [TRADER] Skip {symbol} — sector '{sym_sector}' already held")
             return
 
-        # Position size (halved in bear regime) — shared rule
-        size_usd = strategies.position_size_usd(self.balance, regime)
-        if size_usd > self.balance:
+        # ATR at entry — needed for vol_conviction sizing and the trail_only exit.
+        df_d, _ = market_data.get_ohlc(symbol)
+        atr_v   = strategies.atr(df_d, strategies.ATR_PERIOD)
+
+        # Position sizing — same shared functions the backtest validated.
+        if config.LIVE_SIZING_MODE == "vol_conviction":
+            pos_value = sum(self.current_prices.get(s, p["entry_price"]) * p["shares"]
+                            for s, p in self.positions.items())
+            equity    = self.balance + pos_value
+            size_usd  = strategies.vol_conviction_size(equity, self.balance, price, atr_v, rank)
+            if size_usd <= 0:   # ATR unusable → fall back to flat sizing
+                size_usd = strategies.position_size_usd(self.balance, regime)
+        else:
+            size_usd = strategies.position_size_usd(self.balance, regime)
+
+        if size_usd <= 0 or size_usd > self.balance:
             return
         shares        = size_usd / price
         self.balance -= size_usd
@@ -164,10 +177,16 @@ class StockPaperTrader:
             "size_usd":         size_usd,
             "entry_date":       datetime.now(timezone.utc).date().isoformat(),
             "breakeven_active": False,
+            "atr":              atr_v,   # ATR at entry (for trail_only exit)
         }
 
-        sl = round(price * (1 - config.STOP_LOSS_PCT), 2)
-        tp = round(price * (1 + config.TAKE_PROFIT_PCT), 2)
+        # Display stop/target reflect the active exit mode.
+        if config.LIVE_EXIT_MODE == "trail_only" and atr_v:
+            sl = round(price - strategies.ATR_TRAIL_MULT * atr_v, 2)
+            tp = 0.0   # no take-profit — let winners run
+        else:
+            sl = round(price * (1 - config.STOP_LOSS_PCT), 2)
+            tp = round(price * (1 + config.TAKE_PROFIT_PCT), 2)
 
         trade = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -184,11 +203,19 @@ class StockPaperTrader:
             db.log_trade(trade)
         except Exception as _dbe:
             print(f"[TRADE WRITE] ERROR BUY {symbol}: {_dbe}", flush=True)
+        # Requirement: log which sizing/exit mode the bot used for this trade.
+        atr_str = f"{atr_v:.2f}" if atr_v else "n/a"
+        print(
+            f"  [PAPER] CONFIG sizing={config.LIVE_SIZING_MODE} exit={config.LIVE_EXIT_MODE}"
+            f" max_pos={config.LIVE_MAX_POSITIONS} rank={rank} atr={atr_str}",
+            flush=True,
+        )
         notifier.trade_alert("BUY", symbol, price, shares, 0.0, self.balance, sl, tp)
         regime_tag = f" [BEAR×{config.BEAR_POSITION_SCALE}]" if regime == "BEARISH" else ""
+        tp_str     = f"TP ${tp:,.2f}" if tp else "TP none (trail)"
         print(
             f"  [PAPER] BUY   {symbol:<6} {shares:.4f} sh @ ${price:>10,.2f}"
-            f"  |  SL ${sl:,.2f}  TP ${tp:,.2f}  |  cash ${self.balance:,.2f}{regime_tag}"
+            f"  |  SL ${sl:,.2f}  {tp_str}  |  cash ${self.balance:,.2f}{regime_tag}"
         )
 
     def _close_position(self, symbol: str, price: float, action: str):
@@ -251,9 +278,16 @@ class StockPaperTrader:
                 continue
             pos = self.positions[sym]
 
-            # Shared trailing-stop / break-even / take-profit rule. Mutates pos.
+            # Shared exit rule, selected by the live config. Both mutate pos.
             be_before = pos["breakeven_active"]
-            action    = strategies.manage_position(pos, price)
+            if config.LIVE_EXIT_MODE == "trail_only":
+                # ATR trailing stop, no take-profit, extended max-hold.
+                atr_v    = pos.get("atr") or (price * 0.01)   # fallback never re-adds a TP
+                action   = strategies.manage_position_atr(pos, price, atr_v, strategies.ATR_TRAIL_MULT)
+                max_hold = strategies.MAX_HOLD_TRAIL
+            else:
+                action   = strategies.manage_position(pos, price)   # 4% TP + 2% trail + BE
+                max_hold = config.MAX_HOLD_DAYS
             if not be_before and pos["breakeven_active"]:
                 print(
                     f"  [PAPER] BE STOP  {sym:<6} — SL locked at entry"
@@ -263,10 +297,10 @@ class StockPaperTrader:
             if action:
                 self._close_position(sym, price, action)
             else:
-                # Time-based exit after MAX_HOLD_DAYS trading days
+                # Time-based exit after the (mode-dependent) max hold
                 entry_date = date.fromisoformat(pos["entry_date"])
                 hold_days  = self._count_trading_days(entry_date, today)
-                if hold_days >= config.MAX_HOLD_DAYS:
+                if hold_days >= max_hold:
                     self._close_position(sym, price, "TIME EXIT")
 
     def _process_scan(self, scan: list[dict], regime: str):
@@ -283,7 +317,9 @@ class StockPaperTrader:
         # Min score threshold based on regime (shared rule)
         min_score = strategies.min_score_for_regime(regime)
 
-        # Top BUY candidates filtered by score, earnings, sector
+        # Top BUY candidates filtered by score, earnings, sector. `scan` is
+        # already sorted by score desc, so enumerate gives the conviction rank
+        # (1 = strongest signal) the vol_conviction sizing scales by.
         top_buys = [
             r for r in scan
             if r["signal"] == 1
@@ -291,15 +327,15 @@ class StockPaperTrader:
             and r["score"] >= min_score
         ]
 
-        for opp in top_buys:
-            if len(self.positions) >= config.MAX_POSITIONS:
+        for rank, opp in enumerate(top_buys, 1):
+            if len(self.positions) >= config.LIVE_MAX_POSITIONS:
                 break
             sym = opp["symbol"]
             if sym in self.positions:
                 continue
             price = self.current_prices.get(sym) or opp["price"]
             if price > 0:
-                self._execute_buy(sym, price, regime)
+                self._execute_buy(sym, price, regime, rank)
 
     # ------------------------------------------------------------------ #
     #  Main loop                                                           #
@@ -308,10 +344,16 @@ class StockPaperTrader:
     def run(self):
         self._running = True
         print(f"\n  Balance      : ${self.balance:,.2f} (paper)")
-        print(f"  Max positions: {config.MAX_POSITIONS}")
-        print(f"  Position size: {config.TRADE_SIZE_PCT*100:.0f}%  (BEAR: {config.TRADE_SIZE_PCT*config.BEAR_POSITION_SCALE*100:.1f}%)")
-        print(f"  Trail stop   : {config.STOP_LOSS_PCT*100:.0f}%   BE trigger: {config.BREAKEVEN_TRIGGER*100:.0f}%")
-        print(f"  TP           : {config.TAKE_PROFIT_PCT*100:.0f}%   Max hold: {config.MAX_HOLD_DAYS} trading days")
+        print(f"  [LIVE CONFIG] sizing={config.LIVE_SIZING_MODE}  exit={config.LIVE_EXIT_MODE}  max_positions={config.LIVE_MAX_POSITIONS}")
+        if config.LIVE_SIZING_MODE == "vol_conviction":
+            print(f"  Sizing       : {config.LIVE_SIZING_MODE} — risk {strategies.RISK_PER_TRADE*100:.0f}% equity / {strategies.ATR_STOP_MULT:g}×ATR stop, conviction 1.5/1.25/1.0×, ≤{strategies.MAX_POSITION_PCT*100:.0f}% cap")
+        else:
+            print(f"  Position size: {config.TRADE_SIZE_PCT*100:.0f}%  (BEAR: {config.TRADE_SIZE_PCT*config.BEAR_POSITION_SCALE*100:.1f}%)")
+        if config.LIVE_EXIT_MODE == "trail_only":
+            print(f"  Exit         : {config.LIVE_EXIT_MODE} — {strategies.ATR_TRAIL_MULT:g}×ATR trail, NO take-profit, BE trigger {config.BREAKEVEN_TRIGGER*100:.0f}%, max hold {strategies.MAX_HOLD_TRAIL} days")
+        else:
+            print(f"  Trail stop   : {config.STOP_LOSS_PCT*100:.0f}%   BE trigger: {config.BREAKEVEN_TRIGGER*100:.0f}%")
+            print(f"  TP           : {config.TAKE_PROFIT_PCT*100:.0f}%   Max hold: {config.MAX_HOLD_DAYS} trading days")
         print(f"  Daily limit  : {config.MAX_DAILY_LOSS*100:.0f}%   Loop: every {config.TRADE_LOOP_INTERVAL}s\n")
 
         while self._running:
@@ -404,7 +446,7 @@ class StockPaperTrader:
                 "total_pnl":       round(total_pnl, 2),
                 "total_pnl_pct":   round(total_pnl / self.initial_balance * 100, 4),
                 "num_positions":   len(self.positions),
-                "max_positions":   config.MAX_POSITIONS,
+                "max_positions":   config.LIVE_MAX_POSITIONS,
                 "total_trades":    len(closed),
                 "win_rate":        round(win_rate, 1),
                 "daily_pnl":       round(self.daily_pnl, 2),

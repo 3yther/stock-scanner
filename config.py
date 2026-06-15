@@ -36,7 +36,7 @@ SECTOR_MAP: dict[str, str] = {
     "SPCX": "ETF", "SPY": "ETF", "QQQ": "ETF",
 }
 
-MAX_POSITIONS       = 3       # max simultaneous open positions
+MAX_POSITIONS       = 3       # default cap (backtest default; live uses LIVE_MAX_POSITIONS)
 TRADE_SIZE_PCT      = 0.05    # 5% of balance per position (bull regime)
 STOP_LOSS_PCT       = 0.02    # trailing stop 2% below high watermark
 TAKE_PROFIT_PCT     = 0.04    # 4% above entry
@@ -53,6 +53,15 @@ MIN_SCORE_BEAR      = 80.0    # min score to enter in BEARISH regime
 BEAR_POSITION_SCALE = 0.5     # halve position size in bear regime
 
 INITIAL_BALANCE     = 1000.0
+
+# ── Live bot strategy config ("T4") ─────────────────────────────────────────
+# Validated on out-of-sample (validation) data: +28.36% vs SPY +17.36%,
+# Sharpe 2.28 vs 1.82. Strong in trends, weaker in sideways markets.
+# The sizing/exit numeric params live in strategies.py (shared with the
+# backtester so live behaviour matches what was validated).
+LIVE_SIZING_MODE    = "vol_conviction"   # "flat" | "vol_conviction"
+LIVE_EXIT_MODE      = "trail_only"       # "fixed_tp" | "trail_only"
+LIVE_MAX_POSITIONS  = 5                  # max simultaneous open positions (live bot)
 
 # Scan cadence depends on market state (chosen per-scan in scanner.run_loop).
 SCAN_INTERVAL_OPEN   = 300    # market OPEN   → scan every 5 minutes

@@ -320,6 +320,42 @@ def manage_position_atr(pos: dict, price: float, atr_value: float,
     return None
 
 
+# ── vol_conviction sizing (shared by the backtester and the live bot) ─────
+# Canonical parameters for the "T4" config. Both code paths call
+# vol_conviction_size() so the live bot sizes positions exactly as the backtest
+# that validated this config did — otherwise the validated result wouldn't
+# transfer to live.
+RISK_PER_TRADE   = 0.01    # risk 1% of equity per position
+ATR_STOP_MULT    = 2.0     # sizing assumes a 2×ATR stop distance
+MAX_POSITION_PCT = 0.20    # cap any single position at 20% of equity
+ATR_TRAIL_MULT   = 3.0     # trail_only exit: trail 3×ATR below the high-water mark
+MAX_HOLD_TRAIL   = 15      # trail_only exit: extended max-hold (trading days)
+ATR_PERIOD       = 14
+
+
+def conviction_mult(rank: int) -> float:
+    """Position multiplier by signal rank: 1st 1.5×, 2nd 1.25×, 3rd+ 1.0×."""
+    return {1: 1.5, 2: 1.25}.get(rank, 1.0)
+
+
+def vol_conviction_size(equity: float, cash: float, entry_price: float,
+                        atr_value: float | None, rank: int) -> float:
+    """Dollar position size under volatility-scaled conviction sizing.
+
+    Risk RISK_PER_TRADE of equity over an ATR_STOP_MULT×ATR stop, scaled by the
+    conviction multiplier for `rank`, then capped at MAX_POSITION_PCT of equity
+    AND at available cash (so total exposure can never exceed 100%). Returns 0.0
+    if ATR is unusable — the caller should fall back to flat sizing.
+    """
+    if not atr_value or atr_value <= 0 or entry_price <= 0:
+        return 0.0
+    stop_dist = ATR_STOP_MULT * atr_value
+    risk_usd  = RISK_PER_TRADE * equity
+    base_size = risk_usd * entry_price / stop_dist     # so a stop move loses risk_usd
+    final     = base_size * conviction_mult(rank)
+    return min(final, MAX_POSITION_PCT * equity, cash)
+
+
 # ── Shared trend helper ───────────────────────────────────────────────────
 
 def trend_up_sma(df: pd.DataFrame | None, period: int = 50) -> bool:
