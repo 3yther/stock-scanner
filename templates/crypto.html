@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Bot — TJR Smart Money</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#000408; --surf:rgba(3,8,18,0.96); --surf2:rgba(5,12,24,0.92); --border:rgba(6,182,212,0.10);
+  --green:#3FB950; --red:#F85149; --cyan:#06B6D4; --purple:#7C3AED;
+  --gold:#F59E0B; --text:#C9D1D9; --muted:#4A5568; --mono:'JetBrains Mono',monospace;
+}
+html { color-scheme: dark; }
+body {
+  background: var(--bg);
+  background-image:
+    linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
+  background-size: 40px 40px;
+  color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px; min-height: 100vh; overflow-x: hidden;
+}
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-thumb { background: var(--purple); border-radius: 99px; }
+
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+@keyframes pc-pulse { 0%,100%{opacity:.45} 50%{opacity:1} }
+@keyframes card-enter { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+
+.scanline-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.04) 1px,rgba(0,0,0,.04) 2px); }
+.pc { position: fixed; width: 22px; height: 22px; z-index: 9999; pointer-events: none; animation: pc-pulse 3s ease-in-out infinite; }
+.pc-tl { top:8px;left:8px; border-top:1.5px solid var(--gold); border-left:1.5px solid var(--gold); }
+.pc-tr { top:8px;right:8px; border-top:1.5px solid var(--gold); border-right:1.5px solid var(--gold); }
+.pc-bl { bottom:8px;left:8px; border-bottom:1.5px solid var(--purple); border-left:1.5px solid var(--purple); }
+.pc-br { bottom:8px;right:8px; border-bottom:1.5px solid var(--purple); border-right:1.5px solid var(--purple); }
+
+header { position: sticky; top: 0; z-index: 200; display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; gap: 12px; background: rgba(0,4,8,.96); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); }
+.hdr-left { display:flex; align-items:center; gap:10px; }
+.logo-text { font-family: var(--mono); font-size: .95rem; font-weight: 600; letter-spacing: 1px; color: var(--gold); text-shadow: 0 0 12px rgba(245,158,11,.5); }
+.pill { font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; padding: 3px 9px; border-radius: 2px; border:1px solid var(--border); color: var(--muted); }
+.hdr-right { display:flex; align-items:center; gap:8px; }
+.hdr-clock { font-family: var(--mono); font-size: .7rem; color: var(--muted); letter-spacing: 1px; }
+.nav-link { font-family: var(--mono); font-size: .6rem; letter-spacing: 1px; color: var(--cyan); text-decoration: none; padding: 5px 12px; border: 1px solid rgba(6,182,212,.25); border-radius: 2px; }
+.nav-link:hover { background: rgba(6,182,212,.08); }
+
+.ticker-section { position: sticky; top: 49px; z-index: 190; background: rgba(0,4,8,.98); border-bottom: 1px solid var(--border); }
+.ticker-bar { display: flex; align-items: center; overflow: hidden; height: 28px; position: relative; }
+.ticker-label { font-family: var(--mono); font-size: .55rem; font-weight: 700; letter-spacing: 3px; color: var(--gold); padding: 0 12px; border-right: 1px solid var(--border); white-space: nowrap; flex-shrink:0; height:100%; display:flex; align-items:center; }
+.ticker-wrap { flex: 1; overflow: hidden; }
+.ticker-track { display: inline-flex; align-items: center; white-space: nowrap; animation: ticker-scroll 48s linear infinite; }
+.tick-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 20px; font-family: var(--mono); font-size: .65rem; letter-spacing: 1px; }
+.tick-sym { color: var(--gold); font-weight: 600; }
+.tick-price { color: var(--text); }
+.tick-sub { color: var(--muted); }
+
+main { max-width: 1280px; margin: 0 auto; padding: 20px; }
+.grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+@media (max-width: 900px){ .grid { grid-template-columns: 1fr; } }
+.card { background: var(--surf); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 16px; }
+.card-head { font-family: var(--mono); font-size: .6rem; font-weight: 700; letter-spacing: 2px; color: var(--cyan); padding: 11px 16px; border-bottom: 1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.card-head .accent { color: var(--gold); }
+.card-body { padding: 16px; }
+.row { display:flex; align-items:center; justify-content:space-between; padding: 8px 0; border-bottom: 1px dashed rgba(6,182,212,.08); font-family: var(--mono); font-size: .72rem; }
+.row:last-child { border-bottom: none; }
+.row .k { color: var(--muted); letter-spacing: 1px; }
+.row .v { color: var(--text); }
+.sym-tag { font-family: var(--mono); font-size: .6rem; letter-spacing: 2px; color: var(--gold); margin: 4px 0 8px; }
+.empty { font-family: var(--mono); font-size: .65rem; color: var(--muted); letter-spacing: 1px; padding: 14px 0; text-align:center; }
+.metric-row { display:grid; grid-template-columns: repeat(3,1fr); gap:1px; background: var(--border); }
+.metric { background: var(--surf2); padding: 14px; }
+.metric .k { font-family: var(--mono); font-size:.5rem; letter-spacing:2px; color: var(--muted); text-transform:uppercase; }
+.metric .v { font-family: var(--mono); font-size:1.1rem; font-weight:600; margin-top:6px; }
+.scaffold { font-family: var(--mono); font-size:.55rem; letter-spacing:2px; color: var(--purple); }
+
+footer { text-align:center; padding: 24px; font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; color: var(--muted); }
+
+#boot-overlay { position: fixed; inset: 0; z-index: 99999; background: #000408; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; transition: opacity .5s; }
+#boot-text { font-family: var(--mono); font-size: .9rem; color: var(--gold); letter-spacing: 2px; line-height: 2.2; text-align:center; white-space:pre; text-shadow:0 0 20px rgba(245,158,11,.6); }
+#boot-cursor { display:inline-block; width:8px; height:1em; background: var(--gold); margin-left:3px; vertical-align:middle; animation: pulse-dot .55s step-end infinite; }
+#boot-hint { position:absolute; bottom:36px; font-family: var(--mono); font-size:.52rem; color: var(--muted); letter-spacing:3px; }
+</style>
+</head>
+<body>
+
+<div id="boot-overlay">
+  <div id="boot-text"></div><span id="boot-cursor"></span>
+  <div id="boot-hint">CLICK TO SKIP</div>
+</div>
+
+<div class="scanline-overlay"></div>
+<div class="pc pc-tl"></div><div class="pc pc-tr"></div>
+<div class="pc pc-bl"></div><div class="pc pc-br"></div>
+
+<header>
+  <div class="hdr-left">
+    <span class="logo-text">₿ CRYPTO BOT</span>
+    <span class="pill">TJR SMART MONEY</span>
+    <span class="pill" id="src-pill">SRC —</span>
+  </div>
+  <div class="hdr-right">
+    <span class="hdr-clock" id="clock">--:--:-- UTC</span>
+    <a href="/" class="nav-link">⌂ HOME</a>
+    <a href="/scanner" class="nav-link">📈 SCANNER</a>
+  </div>
+</header>
+
+<div class="ticker-section">
+  <div class="ticker-bar">
+    <span class="ticker-label">LIVE</span>
+    <div class="ticker-wrap"><div class="ticker-track" id="ticker-track"></div></div>
+  </div>
+</div>
+
+<main>
+  <div class="grid">
+    <!-- LEFT: TJR strategy -->
+    <div>
+      <div class="card">
+        <div class="card-head">> CRYPTO BOT <span class="accent">STRATEGY</span> — TJR / ICT <span class="scaffold">SCAFFOLD · PHASE 1</span></div>
+        <div class="card-body">
+          <div class="sym-tag">◆ BTC-USD</div>
+          <div class="row"><span class="k">ASIA RANGE</span><span class="v" id="btc-asia">— / —</span></div>
+          <div class="row"><span class="k">SWEEP STATUS</span><span class="v" id="btc-sweep">awaiting data</span></div>
+          <div class="row"><span class="k">LATEST MSS</span><span class="v" id="btc-mss">—</span></div>
+          <div class="row"><span class="k">ACTIVE FVGs</span><span class="v" id="btc-fvg">—</span></div>
+          <div style="height:14px"></div>
+          <div class="sym-tag">◆ ETH-USD</div>
+          <div class="row"><span class="k">ASIA RANGE</span><span class="v" id="eth-asia">— / —</span></div>
+          <div class="row"><span class="k">SWEEP STATUS</span><span class="v" id="eth-sweep">awaiting data</span></div>
+          <div class="row"><span class="k">LATEST MSS</span><span class="v" id="eth-mss">—</span></div>
+          <div class="row"><span class="k">ACTIVE FVGs</span><span class="v" id="eth-fvg">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">> TJR CHART <span class="scaffold">PHASE 8</span></div>
+        <div class="card-body"><div class="empty">Candlestick + TJR overlays land in Phase 8.</div></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: portfolio + buys -->
+    <div>
+      <div class="card">
+        <div class="card-head">> PAPER PORTFOLIO</div>
+        <div class="metric-row">
+          <div class="metric"><div class="k">Balance</div><div class="v" id="pf-balance">$—</div></div>
+          <div class="metric"><div class="k">Equity</div><div class="v" id="pf-equity">$—</div></div>
+          <div class="metric"><div class="k">P&amp;L</div><div class="v" id="pf-pnl">—</div></div>
+        </div>
+        <div class="card-body">
+          <div class="row"><span class="k">BTC HOLDINGS</span><span class="v" id="pf-btc">—</span></div>
+          <div class="row"><span class="k">ETH HOLDINGS</span><span class="v" id="pf-eth">—</span></div>
+          <div class="row"><span class="k">TODAY'S TJR BUYS</span><span class="v" id="pf-buys">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">> BUY LOG <span class="scaffold">PHASE 4</span></div>
+        <div class="card-body"><div class="empty" id="buy-log">DCA bot + buy ledger arrive in Phase 4.</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>CRYPTO BOT · TJR SMART MONEY CONCEPTS · PAPER TRADING ONLY · NOT FINANCIAL ADVICE</footer>
+
+<script>
+function tickClock(){ document.getElementById('clock').textContent = new Date().toUTCString().slice(17,25) + ' UTC'; }
+tickClock(); setInterval(tickClock, 1000);
+
+// Placeholder ticker until live crypto feed is wired (Phase 7/8).
+const TICK = [['BTC','BTC-USD'],['ETH','ETH-USD'],['SESSION','ASIA · LONDON · NY'],['STRATEGY','SWEEP · MSS · FVG']];
+document.getElementById('ticker-track').innerHTML =
+  [...TICK,...TICK].map(([s,sub])=>`<span class="tick-item"><span class="tick-sym">${s}</span><span class="tick-price" id="tk-${s}">—</span><span class="tick-sub">${sub}</span></span>`).join('');
+
+(function boot(){
+  const overlay = document.getElementById('boot-overlay');
+  const cards = Array.from(document.querySelectorAll('.card'));
+  cards.forEach(el=>el.style.opacity='0');
+  const reveal = () => cards.forEach((el,i)=>{ el.style.opacity=''; el.style.animation=`card-enter .5s ease ${(i*0.07).toFixed(2)}s both`; });
+  const lines = ['CRYPTO BOT v0.1','TJR ENGINE: STANDBY','DATA SOURCE: CONNECTING...','PANELS: SCAFFOLDED'];
+  const full = lines.join('\n'); let i=0;
+  const el = document.getElementById('boot-text');
+  const dismiss = () => { overlay.style.opacity='0'; setTimeout(()=>{ overlay.style.display='none'; reveal(); }, 500); };
+  overlay.addEventListener('click', dismiss);
+  const iv = setInterval(()=>{ i++; el.textContent=full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,600); } }, 22);
+})();
+</script>
+</body>
+</html>

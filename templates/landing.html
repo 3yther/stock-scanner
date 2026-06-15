@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Signal Command Centre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#000408; --surf:rgba(3,8,18,0.96); --border:rgba(6,182,212,0.10);
+  --green:#3FB950; --red:#F85149; --cyan:#06B6D4; --purple:#7C3AED;
+  --gold:#F59E0B; --text:#C9D1D9; --muted:#4A5568; --mono:'JetBrains Mono',monospace;
+}
+html { color-scheme: dark; }
+body {
+  background: var(--bg);
+  background-image:
+    linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
+  background-size: 40px 40px;
+  color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px;
+  min-height: 100vh; overflow-x: hidden;
+}
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-thumb { background: var(--purple); border-radius: 99px; }
+
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.25} }
+@keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+@keyframes pc-pulse { 0%,100%{opacity:.45} 50%{opacity:1} }
+@keyframes card-enter { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+@keyframes glow-cyan { 0%,100%{box-shadow:0 0 10px rgba(6,182,212,.25),inset 0 0 8px rgba(6,182,212,.04)} 50%{box-shadow:0 0 26px rgba(6,182,212,.5),inset 0 0 16px rgba(6,182,212,.1)} }
+@keyframes glow-gold { 0%,100%{box-shadow:0 0 10px rgba(245,158,11,.22),inset 0 0 8px rgba(245,158,11,.04)} 50%{box-shadow:0 0 26px rgba(245,158,11,.5),inset 0 0 16px rgba(245,158,11,.1)} }
+
+/* Scanlines + corner brackets */
+.scanline-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.04) 1px,rgba(0,0,0,.04) 2px); }
+.pc { position: fixed; width: 22px; height: 22px; z-index: 9999; pointer-events: none; animation: pc-pulse 3s ease-in-out infinite; }
+.pc-tl { top:8px;left:8px; border-top:1.5px solid var(--cyan); border-left:1.5px solid var(--cyan); }
+.pc-tr { top:8px;right:8px; border-top:1.5px solid var(--cyan); border-right:1.5px solid var(--cyan); }
+.pc-bl { bottom:8px;left:8px; border-bottom:1.5px solid var(--purple); border-left:1.5px solid var(--purple); }
+.pc-br { bottom:8px;right:8px; border-bottom:1.5px solid var(--purple); border-right:1.5px solid var(--purple); }
+
+/* Header */
+header { position: sticky; top: 0; z-index: 200; display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; gap: 12px; background: rgba(0,4,8,.96); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); }
+.logo-text { font-family: var(--mono); font-size: .95rem; font-weight: 600; letter-spacing: 1px; color: var(--cyan); text-shadow: 0 0 12px rgba(6,182,212,.5); }
+.hdr-clock { font-family: var(--mono); font-size: .7rem; color: var(--muted); letter-spacing: 1px; }
+
+/* Ticker */
+.ticker-section { position: sticky; top: 49px; z-index: 190; background: rgba(0,4,8,.98); border-bottom: 1px solid var(--border); }
+.ticker-bar { display: flex; align-items: center; overflow: hidden; height: 28px; position: relative; }
+.ticker-label { font-family: var(--mono); font-size: .55rem; font-weight: 700; letter-spacing: 3px; color: var(--red); padding: 0 12px; border-right: 1px solid var(--border); white-space: nowrap; flex-shrink: 0; height: 100%; display: flex; align-items: center; }
+.ticker-wrap { flex: 1; overflow: hidden; }
+.ticker-track { display: inline-flex; align-items: center; white-space: nowrap; animation: ticker-scroll 48s linear infinite; }
+.tick-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 20px; font-family: var(--mono); font-size: .65rem; letter-spacing: 1px; }
+.tick-sym { color: var(--cyan); font-weight: 600; }
+.tick-sub { color: var(--muted); }
+
+/* Hero */
+main { max-width: 1100px; margin: 0 auto; padding: 60px 24px 40px; }
+.hero { text-align: center; margin-bottom: 48px; }
+.hero h1 { font-family: var(--mono); font-size: 2.0rem; font-weight: 700; letter-spacing: 4px; color: #fff; text-shadow: 0 0 24px rgba(6,182,212,.5); }
+.hero .sub { font-family: var(--mono); font-size: .7rem; letter-spacing: 4px; color: var(--muted); margin-top: 12px; }
+.hero .blink { display:inline-block; width:8px; height:1em; background:var(--cyan); vertical-align:-2px; margin-left:4px; animation: pulse-dot .6s step-end infinite; }
+
+/* Module cards */
+.modules { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 760px){ .modules { grid-template-columns: 1fr; } }
+.module {
+  position: relative; display: block; text-decoration: none; color: inherit;
+  background: var(--surf); border: 1px solid var(--border); border-radius: 6px;
+  padding: 32px 28px; overflow: hidden; transition: transform .18s, border-color .18s;
+}
+.module:hover { transform: translateY(-4px); }
+.module.scanner:hover { border-color: rgba(6,182,212,.6); animation: glow-cyan 2.4s ease-in-out infinite; }
+.module.crypto:hover  { border-color: rgba(245,158,11,.6); animation: glow-gold 2.4s ease-in-out infinite; }
+.module .tag { font-family: var(--mono); font-size: .52rem; letter-spacing: 3px; color: var(--muted); }
+.module .icon { font-size: 2.4rem; margin: 10px 0 6px; }
+.module h2 { font-family: var(--mono); font-size: 1.4rem; font-weight: 700; letter-spacing: 2px; }
+.module.scanner h2 { color: var(--cyan); }
+.module.crypto h2 { color: var(--gold); }
+.module .desc { font-family: var(--mono); font-size: .66rem; letter-spacing: 1px; color: var(--text); margin-top: 8px; }
+.module .meta { font-family: var(--mono); font-size: .58rem; letter-spacing: 1px; color: var(--muted); margin-top: 18px; display:flex; align-items:center; gap:8px; }
+.module .enter { position: absolute; bottom: 22px; right: 24px; font-family: var(--mono); font-size: .62rem; letter-spacing: 2px; color: var(--muted); transition: color .18s, transform .18s; }
+.module:hover .enter { transform: translateX(4px); }
+.module.scanner:hover .enter { color: var(--cyan); }
+.module.crypto:hover .enter { color: var(--gold); }
+.dot { width:6px;height:6px;border-radius:50%;display:inline-block;animation:pulse-dot 1.6s ease-in-out infinite; }
+.dot.g { background: var(--green); box-shadow:0 0 8px var(--green); }
+
+footer { text-align:center; padding: 30px; font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; color: var(--muted); }
+
+/* Boot overlay */
+#boot-overlay { position: fixed; inset: 0; z-index: 99999; background: #000408;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: opacity .5s; }
+#boot-text { font-family: var(--mono); font-size: .9rem; color: var(--cyan); letter-spacing: 2px; line-height: 2.2; text-align: center; white-space: pre; text-shadow: 0 0 20px rgba(6,182,212,.6); }
+#boot-cursor { display: inline-block; width: 8px; height: 1em; background: var(--cyan); margin-left: 3px; vertical-align: middle; animation: pulse-dot .55s step-end infinite; }
+#boot-hint { position: absolute; bottom: 36px; font-family: var(--mono); font-size: .52rem; color: var(--muted); letter-spacing: 3px; }
+</style>
+</head>
+<body>
+
+<div id="boot-overlay">
+  <div id="boot-text"></div><span id="boot-cursor"></span>
+  <div id="boot-hint">CLICK TO SKIP</div>
+</div>
+
+<div class="scanline-overlay"></div>
+<div class="pc pc-tl"></div><div class="pc pc-tr"></div>
+<div class="pc pc-bl"></div><div class="pc pc-br"></div>
+
+<header>
+  <span class="logo-text">⚡ SIGNAL // COMMAND CENTRE</span>
+  <span class="hdr-clock" id="clock">--:--:--</span>
+</header>
+
+<div class="ticker-section">
+  <div class="ticker-bar">
+    <span class="ticker-label">SYS</span>
+    <div class="ticker-wrap"><div class="ticker-track" id="ticker-track"></div></div>
+  </div>
+</div>
+
+<main>
+  <div class="hero">
+    <h1>SELECT MODULE<span class="blink"></span></h1>
+    <div class="sub">TWO PAPER-TRADING ENGINES · ONE COMMAND CENTRE</div>
+  </div>
+
+  <div class="modules">
+    <a href="/scanner" class="module scanner">
+      <div class="tag">MODULE 01</div>
+      <div class="icon">📈</div>
+      <h2>SCANNER</h2>
+      <div class="desc">US Equities · Momentum</div>
+      <div class="meta"><span class="dot g"></span> LIVE · multi-timeframe MACD + vol-conviction</div>
+      <span class="enter">ENTER ▸</span>
+    </a>
+
+    <a href="/crypto" class="module crypto">
+      <div class="tag">MODULE 02</div>
+      <div class="icon">₿</div>
+      <h2>CRYPTO BOT</h2>
+      <div class="desc">BTC/ETH · TJR Smart Money</div>
+      <div class="meta"><span class="dot g"></span> 24/7 · liquidity sweeps · MSS · FVG DCA</div>
+      <span class="enter">ENTER ▸</span>
+    </a>
+  </div>
+</main>
+
+<footer>SIGNAL COMMAND CENTRE · PAPER TRADING ONLY · NOT FINANCIAL ADVICE</footer>
+
+<script>
+// Clock (UTC)
+function tickClock(){
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    d.toUTCString().slice(17,25) + ' UTC';
+}
+tickClock(); setInterval(tickClock, 1000);
+
+// Decorative ticker
+const TICK = [
+  ['SCANNER','US EQUITIES'],['MOMENTUM','MACD · VOL-CONVICTION'],
+  ['CRYPTO BOT','BTC / ETH'],['TJR','SMART MONEY CONCEPTS'],
+  ['LIQUIDITY','SWEEP · MSS · FVG'],['SESSIONS','ASIA · LONDON · NY'],
+  ['STATUS','SYSTEMS ONLINE'],
+];
+document.getElementById('ticker-track').innerHTML =
+  [...TICK, ...TICK].map(([s,sub]) =>
+    `<span class="tick-item"><span class="tick-sym">${s}</span><span class="tick-sub">${sub}</span></span>`).join('');
+
+// Boot sequence
+(function boot(){
+  const overlay = document.getElementById('boot-overlay');
+  const cards = Array.from(document.querySelectorAll('.module, .hero'));
+  cards.forEach(el => el.style.opacity = '0');
+  const reveal = () => cards.forEach((el,i)=>{ el.style.opacity=''; el.style.animation=`card-enter .5s ease ${(i*0.08).toFixed(2)}s both`; });
+  const lines = ['SIGNAL COMMAND CENTRE v1.0','INITIALISING MODULES...','SCANNER: ONLINE','CRYPTO BOT: ONLINE','SELECT A MODULE...'];
+  const full = lines.join('\n'); let i = 0;
+  const el = document.getElementById('boot-text');
+  const dismiss = () => { overlay.style.opacity='0'; setTimeout(()=>{ overlay.style.display='none'; reveal(); }, 500); };
+  overlay.addEventListener('click', dismiss);
+  const iv = setInterval(()=>{ i++; el.textContent = full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,650); } }, 22);
+})();
+</script>
+</body>
+</html>

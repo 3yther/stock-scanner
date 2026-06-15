@@ -35,8 +35,19 @@ def configure(trader, scanner):
 # ── Routes ────────────────────────────────────────────────────────────────
 
 @app.route("/")
+def landing():
+    return render_template("landing.html")
+
+
+@app.route("/scanner")
 def index():
+    # The existing stock dashboard — unchanged, just moved off "/".
     return render_template("index.html")
+
+
+@app.route("/crypto")
+def crypto_page():
+    return render_template("crypto.html")
 
 
 @app.route("/stats")
