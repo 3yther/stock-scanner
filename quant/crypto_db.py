@@ -88,6 +88,7 @@ _DDL_PG = [
          type TEXT NOT NULL, usd_amount DOUBLE PRECISION NOT NULL,
          price DOUBLE PRECISION NOT NULL, multiplier DOUBLE PRECISION NOT NULL DEFAULT 1.0,
          regime TEXT, created_at TIMESTAMP DEFAULT now())""",
+    """CREATE TABLE IF NOT EXISTS tjr_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
 ]
 
 _DDL_SQLITE = [
@@ -112,6 +113,7 @@ _DDL_SQLITE = [
          id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, symbol TEXT NOT NULL,
          type TEXT NOT NULL, usd_amount REAL NOT NULL, price REAL NOT NULL,
          multiplier REAL NOT NULL DEFAULT 1.0, regime TEXT, created_at TEXT DEFAULT (datetime('now')))""",
+    """CREATE TABLE IF NOT EXISTS tjr_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
 ]
 
 
@@ -207,6 +209,19 @@ def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0, regime=
 
 def get_recent_buys(limit: int = 50) -> list[dict]:
     return _query("SELECT * FROM tjr_buys ORDER BY id DESC LIMIT ?", (limit,))
+
+
+def get_setting(key: str, default=None):
+    rows = _query("SELECT value FROM tjr_settings WHERE key = ?", (key,))
+    return rows[0]["value"] if rows else default
+
+
+def set_setting(key: str, value: str):
+    if USE_PG:
+        _exec("""INSERT INTO tjr_settings (key, value) VALUES (?, ?)
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""", (key, value))
+    else:
+        _exec("INSERT OR REPLACE INTO tjr_settings (key, value) VALUES (?, ?)", (key, value))
 
 
 def get_sweeps_on(symbol: str, date: str) -> list[dict]:

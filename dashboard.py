@@ -300,6 +300,16 @@ def api_tjr_backtest_status():
     return jsonify(tjr_backtest.get_status())
 
 
+@app.route("/api/alerts/settings", methods=["GET", "POST"])
+def api_alerts_settings():
+    """Get/patch multi-channel alert settings (channels + event toggles)."""
+    from quant import alerts
+    if request.method == "POST":
+        merged = alerts.set_settings(request.get_json(force=True) or {})
+        return jsonify({"settings": merged, "configured": alerts.channels_configured()})
+    return jsonify({"settings": alerts.get_settings(), "configured": alerts.channels_configured()})
+
+
 @app.route("/api/crypto/datatest")
 def api_crypto_datatest():
     """TEMPORARY (Phase 0): probe whether Binance is reachable from this server's

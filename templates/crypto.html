@@ -123,6 +123,11 @@ tr:last-child td { border-bottom:none; }
 .bt-col.sel { border-color: var(--gold); }
 .bt-col .lbl { font-size:.5rem; letter-spacing:1px; color:var(--muted); text-transform:uppercase; }
 .bt-col .ret { font-size:1.05rem; font-weight:600; margin-top:4px; }
+.al-h { font-family:var(--mono); font-size:.5rem; letter-spacing:2px; color:var(--gold); margin-bottom:8px; }
+.al-row { display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:.66rem; color:var(--text); padding:4px 0; cursor:pointer; }
+.al-row input { accent-color:var(--cyan); }
+.al-cfg { font-size:.5rem; letter-spacing:1px; }
+.al-cfg.on { color:var(--green); } .al-cfg.off { color:var(--muted); }
 .bt-chart { margin-top:14px; } .bt-chart h4 { font-family:var(--mono); font-size:.55rem; color:var(--muted); letter-spacing:1px; margin-bottom:6px; }
 .bt-chart .cw { position:relative; height:200px; } .bt-chart canvas { width:100% !important; height:100% !important; }
 
@@ -386,6 +391,31 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
         <thead><tr><th>Time (UTC)</th><th>Symbol</th><th>Type</th><th>USD</th><th>Price</th><th>×</th></tr></thead>
         <tbody id="buy-body"><tr><td colspan="6" class="empty">No buys yet</td></tr></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Alert settings -->
+  <div class="card">
+    <div class="card-head"><span>> ALERTS <span class="accent">— MULTI-CHANNEL</span></span><span class="pill" id="al-status">—</span></div>
+    <div class="card-body">
+      <div style="display:flex;gap:36px;flex-wrap:wrap">
+        <div>
+          <div class="al-h">CHANNELS</div>
+          <label class="al-row"><input type="checkbox" data-ch="email"> Email <span class="al-cfg" id="cfg-email"></span></label>
+          <label class="al-row"><input type="checkbox" data-ch="discord"> Discord <span class="al-cfg" id="cfg-discord"></span></label>
+          <label class="al-row"><input type="checkbox" data-ch="slack"> Slack <span class="al-cfg" id="cfg-slack"></span></label>
+          <label class="al-row"><input type="checkbox" data-ch="sms"> SMS <span class="al-cfg" id="cfg-sms"></span></label>
+        </div>
+        <div>
+          <div class="al-h">EVENTS</div>
+          <label class="al-row"><input type="checkbox" data-ev="mss_bull"> Bullish MSS (buying ×2.5)</label>
+          <label class="al-row"><input type="checkbox" data-ev="mss_bear"> Bearish MSS (skip next buy)</label>
+          <label class="al-row"><input type="checkbox" data-ev="fvg"> Bullish FVG buy (batched ~30m)</label>
+          <label class="al-row"><input type="checkbox" data-ev="regime"> Regime change</label>
+          <label class="al-row"><input type="checkbox" data-ev="drawdown"> Drawdown warning</label>
+        </div>
+      </div>
+      <div class="bt-hint">Channels configure via Railway env vars (DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL, Twilio SID/TOKEN/FROM + ALERT_PHONE). Greyed = not configured on the server. MSS &amp; regime alert instantly; FVG alerts are batched to curb spam.</div>
     </div>
   </div>
 
@@ -932,6 +962,30 @@ async function refreshScanner(){
   } catch(e){}
 }
 
+// ── Alert settings panel ──────────────────────────────────────────────────
+async function loadAlerts(){
+  try {
+    const r = await jget('/api/alerts/settings');
+    const s = r.settings||{}, conf = r.configured||{};
+    document.querySelectorAll('[data-ch]').forEach(cb=> cb.checked = !!(s.channels||{})[cb.dataset.ch]);
+    document.querySelectorAll('[data-ev]').forEach(cb=> cb.checked = !!(s.events||{})[cb.dataset.ev]);
+    ['email','discord','slack','sms'].forEach(ch=>{
+      const el=$('cfg-'+ch); if(!el) return; const ok=!!conf[ch];
+      el.textContent = ok?'· configured':'· not set'; el.className='al-cfg '+(ok?'on':'off');
+    });
+    const n = Object.values(conf).filter(Boolean).length;
+    $('al-status').textContent = `${n} CHANNEL${n===1?'':'S'} LIVE`;
+  } catch(e){}
+}
+async function saveAlerts(){
+  const channels={}, events={};
+  document.querySelectorAll('[data-ch]').forEach(cb=> channels[cb.dataset.ch]=cb.checked);
+  document.querySelectorAll('[data-ev]').forEach(cb=> events[cb.dataset.ev]=cb.checked);
+  try { await fetch('/api/alerts/settings', { method:'POST', cache:'no-store',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({channels, events}) }); } catch(e){}
+}
+document.querySelectorAll('[data-ch],[data-ev]').forEach(cb=> cb.addEventListener('change', saveAlerts));
+
 // ── Boot + bootstrap ──────────────────────────────────────────────────────
 (function boot(){
   const overlay = $('boot-overlay');
@@ -945,7 +999,7 @@ async function refreshScanner(){
   const iv = setInterval(()=>{ i++; el.textContent=full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,600); } }, 22);
 })();
 
-refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory(); refreshChartCandles(); refreshSpark();
+refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory(); refreshChartCandles(); refreshSpark(); loadAlerts();
 setInterval(refreshPrices, 5000);
 setInterval(refreshStatus, 10000);
 setInterval(refreshPortfolio, 10000);

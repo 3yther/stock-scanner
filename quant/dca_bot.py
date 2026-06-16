@@ -21,8 +21,7 @@ import time
 from datetime import datetime, timezone
 
 import config
-import notifier
-from quant import crypto_data, crypto_db, tjr_strategy, regime
+from quant import crypto_data, crypto_db, tjr_strategy, regime, alerts
 
 UTC = timezone.utc
 
@@ -53,7 +52,10 @@ class CryptoDCABot:
         self._next_interval = {s: 0.0 for s in self.symbols}
         self._regime      = {s: "UNKNOWN" for s in self.symbols}   # current regime per symbol
         self._regime_data = {s: {} for s in self.symbols}
+        self._prev_regime = {s: None for s in self.symbols}        # for regime-change alerts
         self._regime_ts   = 0.0
+        self._peak_equity = initial_balance
+        self._last_dd     = time.time()                            # 1h grace before drawdown alerts
         self._lock    = threading.Lock()
         self._running = False
         self._reconstruct()
@@ -120,14 +122,13 @@ class CryptoDCABot:
                 print(f"[DCA] regime {s} error: {exc}", flush=True)
         print(f"[DCA] regime: {{ {', '.join(f'{s}:{self._regime[s]}' for s in self.symbols)} }}"
               f" (filter={'ON' if config.CRYPTO_REGIME_FILTER else 'OFF'})", flush=True)
-
-    def _alert(self, headline: str, symbol: str, signal_price: float):
-        """Email a Crypto Bot TJR alert (no-op if email isn't configured)."""
-        print(f"[DCA] ALERT {headline} @ ${signal_price:,.2f}", flush=True)
-        try:
-            notifier.crypto_alert(headline, symbol, signal_price, dict(self.prices))
-        except Exception as exc:
-            print(f"[DCA] alert error: {exc}", flush=True)
+        # Regime-change alerts (skip the very first observation per symbol)
+        for s in self.symbols:
+            new, old = self._regime[s], self._prev_regime[s]
+            if old is not None and new != old and new != "UNKNOWN":
+                alerts.dispatch("regime", f"Crypto Bot TJR: {s} regime: {old} → {new}",
+                                symbol=s, signal="REGIME CHANGE", regime=new, price=self.prices.get(s))
+            self._prev_regime[s] = new
 
     # ── One cycle ─────────────────────────────────────────────────────────
 
@@ -155,25 +156,29 @@ class CryptoDCABot:
                     sig_px = float(res["mss"]["price"])
                     if mdir == "bull":
                         if pol["mss_enabled"] and pol["mss"] > 0:
-                            self._buy(sym, self.base_dca_usd * pol["mss"], price, "tjr_mss", pol["mss"], reg)
-                            self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — buying {pol['mss']:g}×", sym, sig_px)
+                            usd = self.base_dca_usd * pol["mss"]
+                            self._buy(sym, usd, price, "tjr_mss", pol["mss"], reg)
+                            alerts.dispatch("mss_bull", f"Crypto Bot TJR: Bullish MSS on {sym} — buying {pol['mss']:g}×",
+                                            symbol=sym, signal="MSS", direction="Bullish", price=sig_px, regime=reg, buy_amount=usd)
                         else:
-                            self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — scaling suppressed ({reg})", sym, sig_px)
+                            alerts.dispatch("mss_bull", f"Crypto Bot TJR: Bullish MSS on {sym} — scaling suppressed ({reg})",
+                                            symbol=sym, signal="MSS", direction="Bullish", price=sig_px, regime=reg)
                     else:
                         self._skip_next[sym] = True
                         print(f"[DCA] {sym} bearish MSS — next interval buy skipped", flush=True)
-                        self._alert(f"Crypto Bot TJR: Bearish MSS on {sym} — skipping next buy", sym, sig_px)
+                        alerts.dispatch("mss_bear", f"Crypto Bot TJR: Bearish MSS on {sym} — skipping next buy",
+                                        symbol=sym, signal="MSS", direction="Bearish", price=sig_px, regime=reg)
 
-                # FVG zone entries: bullish → buy (regime mult); bearish → alert only.
+                # FVG zone entries: bullish → buy (regime mult), alert only when it actually buys (anti-spam).
                 filled = res.get("filled_fvgs", [])
                 if any(f.get("direction") == "bull" for f in filled):
                     if pol["fvg_enabled"] and pol["fvg"] > 0:
-                        self._buy(sym, self.base_dca_usd * pol["fvg"], price, "tjr_fvg", pol["fvg"], reg)
-                        self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying {pol['fvg']:g}×", sym, price)
+                        usd = self.base_dca_usd * pol["fvg"]
+                        self._buy(sym, usd, price, "tjr_fvg", pol["fvg"], reg)
+                        alerts.dispatch("fvg", f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying {pol['fvg']:g}×",
+                                        symbol=sym, signal="FVG", direction="Bullish", price=price, regime=reg, buy_amount=usd)
                     else:
-                        self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — suppressed ({reg})", sym, price)
-                if any(f.get("direction") == "bear" for f in filled):
-                    self._alert(f"Crypto Bot TJR: Price in Bearish FVG on {sym} — watching", sym, price)
+                        print(f"[DCA] {sym} bullish FVG suppressed ({reg})", flush=True)
 
                 # Scheduled interval DCA (regime scales or pauses it).
                 if time.time() >= self._next_interval[sym]:
@@ -188,6 +193,22 @@ class CryptoDCABot:
 
             except Exception as exc:
                 print(f"[DCA] {sym} cycle error: {exc}", flush=True)
+
+        # Drawdown warning (rate-limited to once/hour) + flush batched FVG alerts.
+        try:
+            equity = self.balance + sum(self.holdings[s] * self.prices.get(s, 0.0) for s in self.symbols)
+            self._peak_equity = max(self._peak_equity, equity)
+            ddpct = float(alerts.get_settings().get("drawdown_pct", 10.0))
+            if self._peak_equity > 0 and equity < self._peak_equity * (1 - ddpct / 100) \
+               and time.time() - self._last_dd > 3600:
+                self._last_dd = time.time()
+                drop = (1 - equity / self._peak_equity) * 100
+                alerts.dispatch("drawdown",
+                                f"Crypto Bot TJR: paper portfolio down {drop:.1f}% from peak "
+                                f"(${self._peak_equity:,.2f} → ${equity:,.2f})", price=round(equity, 2))
+            alerts.flush_due()
+        except Exception as exc:
+            print(f"[DCA] alert sweep error: {exc}", flush=True)
 
     # ── Thread loop ───────────────────────────────────────────────────────
 
