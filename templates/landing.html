@@ -3,189 +3,273 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Signal Command Centre</title>
+<title>⟢ Event Horizon Capital</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg:#000408; --surf:rgba(3,8,18,0.96); --border:rgba(6,182,212,0.10);
-  --green:#3FB950; --red:#F85149; --cyan:#06B6D4; --purple:#7C3AED;
-  --gold:#F59E0B; --text:#C9D1D9; --muted:#4A5568; --mono:'JetBrains Mono',monospace;
-}
-html { color-scheme: dark; }
+:root { --cyan:#00eaff; --pink:#ff2bd6; --eblue:#4d7cff; --gold:#00eaff; --text:#dbe7ff; --muted:#5d6f99; --mono:'JetBrains Mono',monospace; }
+html, body { height: 100%; }
 body {
-  background: var(--bg);
-  background-image:
-    linear-gradient(rgba(6,182,212,.020) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(6,182,212,.020) 1px, transparent 1px);
-  background-size: 40px 40px;
-  color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px;
-  min-height: 100vh; overflow-x: hidden;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(168,85,247,.18), transparent 40%),
+    radial-gradient(circle at 50% 46%, rgba(0,234,255,.10), transparent 60%),
+    #03010a;
+  color: var(--text); font-family: 'Inter', sans-serif; overflow: hidden; position: relative;
 }
-::-webkit-scrollbar { width: 3px; height: 3px; }
-::-webkit-scrollbar-thumb { background: var(--purple); border-radius: 99px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin-rev { to { transform: rotate(-360deg); } }
+@keyframes twinkle { 0%,100%{opacity:.25} 50%{opacity:1} }
+@keyframes pulse { 0%,100%{opacity:.6} 50%{opacity:1} }
+@keyframes orbit { to { transform: rotate(360deg); } }
 
-@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.25} }
-@keyframes ticker-scroll { from{transform:translateX(0)} to{transform:translateX(-50%)} }
-@keyframes pc-pulse { 0%,100%{opacity:.45} 50%{opacity:1} }
-@keyframes card-enter { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-@keyframes glow-cyan { 0%,100%{box-shadow:0 0 10px rgba(6,182,212,.25),inset 0 0 8px rgba(6,182,212,.04)} 50%{box-shadow:0 0 26px rgba(6,182,212,.5),inset 0 0 16px rgba(6,182,212,.1)} }
-@keyframes glow-gold { 0%,100%{box-shadow:0 0 10px rgba(245,158,11,.22),inset 0 0 8px rgba(245,158,11,.04)} 50%{box-shadow:0 0 26px rgba(245,158,11,.5),inset 0 0 16px rgba(245,158,11,.1)} }
+/* WebGL canvas (filled lazily; hidden until ready) */
+#bh { position: fixed; inset: 0; z-index: 1; opacity: 0; transition: opacity 1.2s ease; }
+#bh.on { opacity: 1; }
 
-/* Scanlines + corner brackets */
-.scanline-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 9998;
-  background: repeating-linear-gradient(0deg,transparent 0,transparent 1px,rgba(0,0,0,.04) 1px,rgba(0,0,0,.04) 2px); }
-.pc { position: fixed; width: 22px; height: 22px; z-index: 9999; pointer-events: none; animation: pc-pulse 3s ease-in-out infinite; }
-.pc-tl { top:8px;left:8px; border-top:1.5px solid var(--cyan); border-left:1.5px solid var(--cyan); }
-.pc-tr { top:8px;right:8px; border-top:1.5px solid var(--cyan); border-right:1.5px solid var(--cyan); }
-.pc-bl { bottom:8px;left:8px; border-bottom:1.5px solid var(--purple); border-left:1.5px solid var(--purple); }
-.pc-br { bottom:8px;right:8px; border-bottom:1.5px solid var(--purple); border-right:1.5px solid var(--purple); }
-
-/* Header */
-header { position: sticky; top: 0; z-index: 200; display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px; gap: 12px; background: rgba(0,4,8,.96); border-bottom: 1px solid var(--border); backdrop-filter: blur(20px); }
-.logo-text { font-family: var(--mono); font-size: .95rem; font-weight: 600; letter-spacing: 1px; color: var(--cyan); text-shadow: 0 0 12px rgba(6,182,212,.5); }
-.hdr-clock { font-family: var(--mono); font-size: .7rem; color: var(--muted); letter-spacing: 1px; }
-
-/* Ticker */
-.ticker-section { position: sticky; top: 49px; z-index: 190; background: rgba(0,4,8,.98); border-bottom: 1px solid var(--border); }
-.ticker-bar { display: flex; align-items: center; overflow: hidden; height: 28px; position: relative; }
-.ticker-label { font-family: var(--mono); font-size: .55rem; font-weight: 700; letter-spacing: 3px; color: var(--red); padding: 0 12px; border-right: 1px solid var(--border); white-space: nowrap; flex-shrink: 0; height: 100%; display: flex; align-items: center; }
-.ticker-wrap { flex: 1; overflow: hidden; }
-.ticker-track { display: inline-flex; align-items: center; white-space: nowrap; animation: ticker-scroll 48s linear infinite; }
-.tick-item { display: inline-flex; align-items: center; gap: 6px; padding: 0 20px; font-family: var(--mono); font-size: .65rem; letter-spacing: 1px; }
-.tick-sym { color: var(--cyan); font-weight: 600; }
-.tick-sub { color: var(--muted); }
-
-/* Hero */
-main { max-width: 1100px; margin: 0 auto; padding: 60px 24px 40px; }
-.hero { text-align: center; margin-bottom: 48px; }
-.hero h1 { font-family: var(--mono); font-size: 2.0rem; font-weight: 700; letter-spacing: 4px; color: #fff; text-shadow: 0 0 24px rgba(6,182,212,.5); }
-.hero .sub { font-family: var(--mono); font-size: .7rem; letter-spacing: 4px; color: var(--muted); margin-top: 12px; }
-.hero .blink { display:inline-block; width:8px; height:1em; background:var(--cyan); vertical-align:-2px; margin-left:4px; animation: pulse-dot .6s step-end infinite; }
-
-/* Module cards */
-.modules { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 760px){ .modules { grid-template-columns: 1fr; } }
-.module {
-  position: relative; display: block; text-decoration: none; color: inherit;
-  background: var(--surf); border: 1px solid var(--border); border-radius: 6px;
-  padding: 32px 28px; overflow: hidden; transition: transform .18s, border-color .18s;
+/* CSS-only fallback black hole + starfield (always present, behind WebGL) */
+#stage { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+.stars { position: absolute; inset: -20%; }
+.stars i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff; animation: twinkle 3s ease-in-out infinite; }
+.css-hole {
+  position: absolute; left: 50%; top: 46%; width: 340px; height: 340px; transform: translate(-50%,-50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, #000 38%, rgba(0,0,0,.9) 41%, transparent 42%);
+  box-shadow: 0 0 80px 10px rgba(0,234,255,.10);
 }
-.module:hover { transform: translateY(-4px); }
-.module.scanner:hover { border-color: rgba(6,182,212,.6); animation: glow-cyan 2.4s ease-in-out infinite; }
-.module.crypto:hover  { border-color: rgba(245,158,11,.6); animation: glow-gold 2.4s ease-in-out infinite; }
-.module .tag { font-family: var(--mono); font-size: .52rem; letter-spacing: 3px; color: var(--muted); }
-.module .icon { font-size: 2.4rem; margin: 10px 0 6px; }
-.module h2 { font-family: var(--mono); font-size: 1.4rem; font-weight: 700; letter-spacing: 2px; }
-.module.scanner h2 { color: var(--cyan); }
-.module.crypto h2 { color: var(--gold); }
-.module .desc { font-family: var(--mono); font-size: .66rem; letter-spacing: 1px; color: var(--text); margin-top: 8px; }
-.module .meta { font-family: var(--mono); font-size: .58rem; letter-spacing: 1px; color: var(--muted); margin-top: 18px; display:flex; align-items:center; gap:8px; }
-.module .enter { position: absolute; bottom: 22px; right: 24px; font-family: var(--mono); font-size: .62rem; letter-spacing: 2px; color: var(--muted); transition: color .18s, transform .18s; }
-.module:hover .enter { transform: translateX(4px); }
-.module.scanner:hover .enter { color: var(--cyan); }
-.module.crypto:hover .enter { color: var(--gold); }
-.dot { width:6px;height:6px;border-radius:50%;display:inline-block;animation:pulse-dot 1.6s ease-in-out infinite; }
-.dot.g { background: var(--green); box-shadow:0 0 8px var(--green); }
+.css-disk {
+  position: absolute; left: 50%; top: 46%; width: 520px; height: 520px; transform: translate(-50%,-50%) rotateX(72deg);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(0,234,255,.0), rgba(0,234,255,.55), rgba(255,43,214,.55), rgba(255,140,20,.45), rgba(0,234,255,0));
+  filter: blur(8px); animation: spin 26s linear infinite; opacity: .85;
+  -webkit-mask: radial-gradient(circle, transparent 30%, #000 33%, #000 49%, transparent 52%);
+          mask: radial-gradient(circle, transparent 30%, #000 33%, #000 49%, transparent 52%);
+}
+.ring { position:absolute; left:50%; top:46%; width:360px; height:360px; transform:translate(-50%,-50%); border-radius:50%;
+  border:1px solid rgba(0,234,255,.5); box-shadow:0 0 26px rgba(0,234,255,.5), inset 0 0 26px rgba(255,43,214,.3); }
+@media (max-width:640px){ .css-hole,.css-disk,.ring { width:200px; height:200px; } .css-disk{ width:300px; height:300px; } }
 
-footer { text-align:center; padding: 30px; font-family: var(--mono); font-size: .55rem; letter-spacing: 2px; color: var(--muted); }
+/* Title + content */
+.stage-content { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 7vh; pointer-events: none; }
+.title { text-align: center; margin-bottom: 3vh; }
+.title h1 { font-family: var(--mono); font-size: clamp(1.1rem, 3.4vw, 2.0rem); font-weight: 700; letter-spacing: 6px; color: #fff; text-shadow: 0 0 26px rgba(0,234,255,.6), 0 0 50px rgba(255,43,214,.3); }
+.title .sub { font-family: var(--mono); font-size: .62rem; letter-spacing: 5px; color: var(--muted); margin-top: 12px; }
 
-/* Boot overlay */
-#boot-overlay { position: fixed; inset: 0; z-index: 99999; background: #000408;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: opacity .5s; }
-#boot-text { font-family: var(--mono); font-size: .9rem; color: var(--cyan); letter-spacing: 2px; line-height: 2.2; text-align: center; white-space: pre; text-shadow: 0 0 20px rgba(6,182,212,.6); }
-#boot-cursor { display: inline-block; width: 8px; height: 1em; background: var(--cyan); margin-left: 3px; vertical-align: middle; animation: pulse-dot .55s step-end infinite; }
-#boot-hint { position: absolute; bottom: 36px; font-family: var(--mono); font-size: .52rem; color: var(--muted); letter-spacing: 3px; }
+/* Portals */
+.portals { display: flex; gap: clamp(20px, 7vw, 90px); pointer-events: auto; }
+.portal {
+  position: relative; width: clamp(150px, 22vw, 230px); text-decoration: none; color: inherit;
+  display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 18px;
+  border-radius: 14px; background: rgba(8,6,24,.55); backdrop-filter: blur(8px);
+  border: 1px solid rgba(0,234,255,.18); transition: transform .25s, box-shadow .25s, border-color .25s;
+  box-shadow: 0 0 0 1px rgba(0,234,255,.05), 0 14px 40px rgba(0,0,0,.6);
+}
+.portal .orb { width: 54px; height: 54px; border-radius: 50%; position: relative; }
+.portal.scanner .orb { background: radial-gradient(circle at 35% 30%, #8fefff, #00b8d4 55%, #003a44); box-shadow: 0 0 26px rgba(0,234,255,.7); }
+.portal.crypto  .orb { background: radial-gradient(circle at 35% 30%, #ffd27a, #ff8a00 55%, #5a2b00); box-shadow: 0 0 26px rgba(255,140,20,.7); }
+.portal .orb::after { content:''; position:absolute; inset:-9px; border-radius:50%; border:1px solid rgba(255,255,255,.18); animation: orbit 8s linear infinite; }
+.portal h2 { font-family: var(--mono); font-size: 1.05rem; font-weight: 700; letter-spacing: 2px; }
+.portal.scanner h2 { color: var(--cyan); } .portal.crypto h2 { color: var(--gold); }
+.portal .desc { font-family: var(--mono); font-size: .58rem; letter-spacing: 1px; color: var(--text); }
+.portal .meta { font-family: var(--mono); font-size: .5rem; letter-spacing: 1px; color: var(--muted); }
+.portal:hover { transform: translateY(-6px); }
+.portal.scanner:hover { border-color: rgba(0,234,255,.7); box-shadow: 0 0 36px rgba(0,234,255,.5), 0 18px 50px rgba(0,0,0,.7); }
+.portal.crypto:hover  { border-color: rgba(255,140,20,.7); box-shadow: 0 0 36px rgba(255,140,20,.5), 0 18px 50px rgba(0,0,0,.7); }
+
+footer { position: fixed; bottom: 14px; width: 100%; text-align: center; z-index: 5; font-family: var(--mono); font-size: .5rem; letter-spacing: 2px; color: var(--muted); pointer-events: none; }
+
+/* Intro */
+#intro { position: fixed; inset: 0; z-index: 99; background: #03010a; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: opacity .8s; }
+#intro .glyph { font-size: 2.2rem; color: var(--cyan); text-shadow: 0 0 40px rgba(0,234,255,.8); animation: pulse 1.6s ease-in-out infinite; }
+#intro .t { font-family: var(--mono); font-size: clamp(1rem,4vw,2.2rem); letter-spacing: 8px; color: #fff; margin-top: 18px; text-shadow: 0 0 30px rgba(0,234,255,.6); white-space: pre; }
+#intro .hint { position: absolute; bottom: 40px; font-family: var(--mono); font-size: .5rem; letter-spacing: 3px; color: var(--muted); }
+
+/* Fall-in transition */
+#stage, #bh, .stage-content { transition: transform 1s cubic-bezier(.6,.05,.2,1), opacity 1s; }
+body.diving #stage, body.diving #bh, body.diving .stage-content { opacity: 0; }
+body.dive-scanner #stage, body.dive-scanner #bh { transform: scale(6) translateX(-12%); }
+body.dive-crypto  #stage, body.dive-crypto  #bh { transform: scale(6) translateX(12%); }
+.flash { position: fixed; inset: 0; z-index: 80; opacity: 0; pointer-events: none; transition: opacity .9s; }
+.flash.go { opacity: .9; }
+
+@media (prefers-reduced-motion: reduce){
+  .css-disk, .portal .orb::after, #intro .glyph { animation: none !important; }
+}
 </style>
 </head>
 <body>
 
-<div id="boot-overlay">
-  <div id="boot-text"></div><span id="boot-cursor"></span>
-  <div id="boot-hint">CLICK TO SKIP</div>
+<!-- CSS fallback scene (always present) -->
+<div id="stage">
+  <div class="stars" id="stars"></div>
+  <div class="css-disk"></div>
+  <div class="ring"></div>
+  <div class="css-hole"></div>
 </div>
 
-<div class="scanline-overlay"></div>
-<div class="pc pc-tl"></div><div class="pc pc-tr"></div>
-<div class="pc pc-bl"></div><div class="pc pc-br"></div>
+<!-- WebGL canvas (filled lazily) -->
+<canvas id="bh"></canvas>
 
-<header>
-  <span class="logo-text">⚡ SIGNAL // COMMAND CENTRE</span>
-  <span class="hdr-clock" id="clock">--:--:--</span>
-</header>
+<!-- Dive flash -->
+<div class="flash" id="flash"></div>
 
-<div class="ticker-section">
-  <div class="ticker-bar">
-    <span class="ticker-label">SYS</span>
-    <div class="ticker-wrap"><div class="ticker-track" id="ticker-track"></div></div>
+<!-- Foreground -->
+<div class="stage-content">
+  <div class="title">
+    <h1>⟢ EVENT HORIZON CAPITAL</h1>
+    <div class="sub">TWO ENGINES · ONE SINGULARITY · PAPER TRADING</div>
   </div>
-</div>
-
-<main>
-  <div class="hero">
-    <h1>SELECT MODULE<span class="blink"></span></h1>
-    <div class="sub">TWO PAPER-TRADING ENGINES · ONE COMMAND CENTRE</div>
-  </div>
-
-  <div class="modules">
-    <a href="/scanner" class="module scanner">
-      <div class="tag">MODULE 01</div>
-      <div class="icon">📈</div>
-      <h2>SCANNER</h2>
+  <div class="portals">
+    <a href="/scanner" class="portal scanner" data-dive="scanner">
+      <div class="orb"></div><h2>SCANNER</h2>
       <div class="desc">US Equities · Momentum</div>
-      <div class="meta"><span class="dot g"></span> LIVE · multi-timeframe MACD + vol-conviction</div>
-      <span class="enter">ENTER ▸</span>
+      <div class="meta">MACD · vol-conviction</div>
     </a>
-
-    <a href="/crypto" class="module crypto">
-      <div class="tag">MODULE 02</div>
-      <div class="icon">₿</div>
-      <h2>CRYPTO BOT</h2>
+    <a href="/crypto" class="portal crypto" data-dive="crypto">
+      <div class="orb"></div><h2>CRYPTO BOT</h2>
       <div class="desc">BTC/ETH · TJR Smart Money</div>
-      <div class="meta"><span class="dot g"></span> 24/7 · liquidity sweeps · MSS · FVG DCA</div>
-      <span class="enter">ENTER ▸</span>
+      <div class="meta">sweep · MSS · FVG · regime</div>
     </a>
   </div>
-</main>
+</div>
 
-<footer>SIGNAL COMMAND CENTRE · PAPER TRADING ONLY · NOT FINANCIAL ADVICE</footer>
+<footer>EVENT HORIZON CAPITAL · PAPER TRADING ONLY · NOT FINANCIAL ADVICE</footer>
+
+<!-- Intro -->
+<div id="intro">
+  <div class="glyph">⟢</div>
+  <div class="t">EVENT HORIZON</div>
+  <div class="hint">CLICK TO ENTER</div>
+</div>
 
 <script>
-// Clock (UTC)
-function tickClock(){
-  const d = new Date();
-  document.getElementById('clock').textContent =
-    d.toUTCString().slice(17,25) + ' UTC';
-}
-tickClock(); setInterval(tickClock, 1000);
+const $ = id => document.getElementById(id);
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || window.innerWidth < 760;
 
-// Decorative ticker
-const TICK = [
-  ['SCANNER','US EQUITIES'],['MOMENTUM','MACD · VOL-CONVICTION'],
-  ['CRYPTO BOT','BTC / ETH'],['TJR','SMART MONEY CONCEPTS'],
-  ['LIQUIDITY','SWEEP · MSS · FVG'],['SESSIONS','ASIA · LONDON · NY'],
-  ['STATUS','SYSTEMS ONLINE'],
-];
-document.getElementById('ticker-track').innerHTML =
-  [...TICK, ...TICK].map(([s,sub]) =>
-    `<span class="tick-item"><span class="tick-sym">${s}</span><span class="tick-sub">${sub}</span></span>`).join('');
-
-// Boot sequence
-(function boot(){
-  const overlay = document.getElementById('boot-overlay');
-  const cards = Array.from(document.querySelectorAll('.module, .hero'));
-  cards.forEach(el => el.style.opacity = '0');
-  const reveal = () => cards.forEach((el,i)=>{ el.style.opacity=''; el.style.animation=`card-enter .5s ease ${(i*0.08).toFixed(2)}s both`; });
-  const lines = ['SIGNAL COMMAND CENTRE v1.0','INITIALISING MODULES...','SCANNER: ONLINE','CRYPTO BOT: ONLINE','SELECT A MODULE...'];
-  const full = lines.join('\n'); let i = 0;
-  const el = document.getElementById('boot-text');
-  const dismiss = () => { overlay.style.opacity='0'; setTimeout(()=>{ overlay.style.display='none'; reveal(); }, 500); };
-  overlay.addEventListener('click', dismiss);
-  const iv = setInterval(()=>{ i++; el.textContent = full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,650); } }, 22);
+// ── CSS starfield (lightweight fallback, always drawn) ────────────────────
+(function stars(){
+  const host = $('stars'); const n = isMobile ? 60 : 140; let html = '';
+  for (let i=0;i<n;i++){
+    const x=Math.random()*100, y=Math.random()*100, d=(Math.random()*3+2).toFixed(1), s=(Math.random()*1.6+0.4).toFixed(1);
+    html += `<i style="left:${x}%;top:${y}%;width:${s}px;height:${s}px;animation-duration:${d}s;animation-delay:${(Math.random()*3).toFixed(1)}s"></i>`;
+  }
+  host.innerHTML = html;
 })();
+
+// ── Intro (skippable) ──────────────────────────────────────────────────────
+(function intro(){
+  const el = $('intro');
+  const dismiss = () => { el.style.opacity='0'; setTimeout(()=> el.style.display='none', 800); };
+  el.addEventListener('click', dismiss);
+  setTimeout(dismiss, reduced ? 600 : 2600);
+})();
+
+// ── Dive transition on portal click ────────────────────────────────────────
+document.querySelectorAll('.portal').forEach(a => a.addEventListener('click', e => {
+  if (reduced){ return; }                          // let the normal navigation happen
+  e.preventDefault();
+  const which = a.dataset.dive, href = a.getAttribute('href');
+  const fl = $('flash');
+  fl.style.background = which==='crypto'
+    ? 'radial-gradient(circle, rgba(255,140,20,.9), #03010a 70%)'
+    : 'radial-gradient(circle, rgba(0,234,255,.9), #03010a 70%)';
+  document.body.classList.add('diving', 'dive-'+which);
+  setTimeout(()=> fl.classList.add('go'), 250);
+  setTimeout(()=> window.location.href = href, 1000);
+}));
+
+// ── WebGL black hole (progressive enhancement) ─────────────────────────────
+function webglOK(){
+  try { const c=document.createElement('canvas'); return !!(window.WebGLRenderingContext && (c.getContext('webgl')||c.getContext('experimental-webgl'))); }
+  catch(e){ return false; }
+}
+let renderer, scene, camera, disk, stars3, raf=0, running=true, clock0=performance.now();
+
+function initBH(){
+  try {
+    const cv = $('bh');
+    renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: !isMobile, alpha: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, isMobile?1.2:2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 100);
+    camera.position.set(0, 1.7, 6.2); camera.lookAt(0, 0, 0);
+
+    // Starfield (drifts toward the centre — gravitational pull feel)
+    const N = isMobile ? 1200 : 3200;
+    const geo = new THREE.BufferGeometry(); const pos = new Float32Array(N*3);
+    for (let i=0;i<N;i++){ const r=6+Math.random()*26, a=Math.random()*Math.PI*2, e=(Math.random()-.5)*14;
+      pos[i*3]=Math.cos(a)*r; pos[i*3+1]=e; pos[i*3+2]=Math.sin(a)*r; }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+    stars3 = new THREE.Points(geo, new THREE.PointsMaterial({ color:0x9fd8ff, size:0.05, transparent:true, opacity:.85, depthWrite:false }));
+    scene.add(stars3);
+
+    // Accretion disk (custom shader, additive — the "bloom" glow)
+    const diskMat = new THREE.ShaderMaterial({
+      transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+      uniforms:{ uTime:{value:0} },
+      vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+      fragmentShader:`varying vec2 vUv; uniform float uTime;
+        void main(){
+          vec2 p=vUv-0.5; float r=length(p)*2.0; float ang=atan(p.y,p.x);
+          float inner=0.34, outer=0.98;
+          if(r<inner||r>outer) discard;
+          float swirl=sin(ang*3.0+uTime*1.4 - r*9.0);
+          float br=smoothstep(inner,inner+0.05,r)*(1.0-smoothstep(outer-0.28,outer,r));
+          br*=0.55+0.45*swirl;
+          vec3 col=mix(vec3(0.0,0.92,1.0),vec3(1.0,0.17,0.84),smoothstep(inner,0.6,r));
+          col=mix(col,vec3(1.0,0.55,0.12),smoothstep(0.6,outer,r));
+          col+=smoothstep(inner+0.04,inner,r)*vec3(0.6,0.9,1.2);   // hot photon-ring edge
+          gl_FragColor=vec4(col, clamp(br,0.0,1.0));
+        }`
+    });
+    disk = new THREE.Mesh(new THREE.PlaneGeometry(7.4, 7.4), diskMat);
+    disk.rotation.x = -1.15;
+    scene.add(disk);
+
+    // Bright photon ring + dark event-horizon core
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1.18, 1.30, 96),
+      new THREE.MeshBasicMaterial({ color:0x9fe9ff, transparent:true, opacity:.9, blending:THREE.AdditiveBlending, side:THREE.DoubleSide, depthWrite:false }));
+    ring.rotation.x = -1.15; scene.add(ring);
+    const core = new THREE.Mesh(new THREE.CircleGeometry(1.16, 64), new THREE.MeshBasicMaterial({ color:0x000000 }));
+    core.rotation.x = -1.15; core.position.y = 0.001; scene.add(core);
+
+    window.addEventListener('resize', onResize);
+    document.addEventListener('visibilitychange', ()=>{ running = !document.hidden; if(running) loop(); });
+    cv.classList.add('on');
+    loop();
+  } catch(e){ console.warn('black hole init failed; CSS fallback stays:', e); }
+}
+function onResize(){ if(!renderer) return; camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+function loop(){
+  if(!running) return;
+  raf = requestAnimationFrame(loop);
+  const t = (performance.now()-clock0)/1000;
+  if (disk) disk.material.uniforms.uTime.value = t;
+  if (stars3){
+    stars3.rotation.y = t*0.02;
+    const a = stars3.geometry.attributes.position.array;
+    for (let i=0;i<a.length;i+=3){           // slow inward drift toward the singularity
+      const dx=-a[i], dz=-a[i+2], d=Math.hypot(dx,dz)||1;
+      a[i]+=dx/d*0.006; a[i+2]+=dz/d*0.006; a[i+1]*=0.9996;
+      if (d<2.2){ const r=20+Math.random()*10, an=Math.random()*Math.PI*2; a[i]=Math.cos(an)*r; a[i+2]=Math.sin(an)*r; a[i+1]=(Math.random()-.5)*14; }
+    }
+    stars3.geometry.attributes.position.needsUpdate = true;
+  }
+  if (camera){ camera.position.x = Math.sin(t*0.06)*0.6; camera.lookAt(0,0,0); }
+  renderer.render(scene, camera);
+}
+
+// Lazy-load Three.js only when the device can handle it (after intro paint).
+if (!reduced && !isMobile && webglOK()){
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+  s.onload = () => { if (window.THREE) initBH(); };
+  s.onerror = () => console.warn('three.js failed to load; CSS fallback stays');
+  setTimeout(()=> document.head.appendChild(s), 400);   // let the CSS scene paint first
+}
 </script>
 </body>
 </html>
