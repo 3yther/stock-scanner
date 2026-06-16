@@ -284,14 +284,14 @@ def api_tjr_backtest_run():
     from quant import tjr_backtest
     body = request.get_json(force=True) or {}
     today = datetime.now(timezone.utc).date()
-    end   = (body.get("end")   or today.isoformat())[:10]
-    start = (body.get("start") or (today - timedelta(days=30)).isoformat())[:10]
-    regime_filter = bool(body.get("regime_filter", True))
+    body["end"]   = (body.get("end")   or today.isoformat())[:10]
+    body["start"] = (body.get("start") or (today - timedelta(days=30)).isoformat())[:10]
     if tjr_backtest.is_running():
         return jsonify({"started": False, "reason": "A backtest is already running"}), 409
-    started = tjr_backtest.start(start, end, regime_filter)
-    print(f"[TJR BT] run requested: {start}→{end} regime_filter={regime_filter} started={started}", flush=True)
-    return jsonify({"started": started, "start": start, "end": end, "regime_filter": regime_filter})
+    started = tjr_backtest.start(body)
+    print(f"[TJR BT] run requested: mode={body.get('mode')} {body['start']}→{body['end']} "
+          f"regime_filter={body.get('regime_filter')} started={started}", flush=True)
+    return jsonify({"started": started, "start": body["start"], "end": body["end"]})
 
 
 @app.route("/api/tjr/backtest_status")

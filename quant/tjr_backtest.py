@@ -1,17 +1,15 @@
 """
-tjr_backtest.py — read-only TJR backtester for BTC/ETH.
+tjr_backtest.py — read-only TJR backtester / tuning lab for BTC/ETH.
 
-Mirrors the stock backtester's structure: a single run at a time in a background
-thread, polled via get_status(). Replays historical 5m candles with the SAME
-pure TJR detectors the live strategy uses (no-lookahead — only closed candles),
-counts how often each signal would have fired, and simulates TWO DCA variants on
-the identical signal stream:
+Single run  : one parameter set → standard-vs-TJR DCA over the range, plus a
+              TRAIN→VALIDATION split when a split date is given.
+Sweep run   : vary ONE parameter across its range; one row per value, sorted,
+              best Sharpe highlighted (anti-overfit caption included).
 
-  standard : interval-only DCA ($BASE every INTERVAL_HOURS into each symbol)
-  tjr      : interval DCA + 2.5× on bullish MSS + 1.5× on bullish FVG fill,
-             skipping the next interval after a bearish MSS
-
-NEVER writes the live tjr_buys ledger — everything is in-memory.
+Tunable params: symbols, DCA interval, FVG ATR threshold, MSS/FVG multipliers,
+base buy USD, regime filter (Phase A). Uses the SAME causal TJR detectors as the
+live strategy (no-lookahead). NEVER writes the live tjr_buys ledger — all in
+memory. Runs in a background thread, polled via get_status().
 """
 
 import threading
@@ -22,11 +20,17 @@ from datetime import datetime, timezone, timedelta
 from quant import crypto_data, tjr_strategy as T, regime as RG
 
 UTC = timezone.utc
+INITIAL  = 1000.0
+ALL_SYMBOLS = ["BTC", "ETH"]
 
-BASE_DCA_USD   = 10.0
-INTERVAL_HOURS = 6
-INITIAL        = 1000.0
-SYMBOLS        = ["BTC", "ETH"]
+# Sweep ranges (UI picks which single param to vary).
+SWEEP_RANGES = {
+    "interval_hours": [1, 2, 4, 6, 8, 12],
+    "fvg_atr":        [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "mss_mult":       [1.5, 2.0, 2.5, 3.0],
+    "fvg_mult":       [1.0, 1.5, 2.0, 2.5],
+    "base_usd":       [5, 10, 20, 50],
+}
 
 _state = {"status": "idle", "progress": 0.0, "message": "", "result": None,
           "error": None, "started_at": None, "finished_at": None}
@@ -48,20 +52,45 @@ def is_running() -> bool:
         return _state["status"] in ("fetching", "running")
 
 
-def start(start_date: str, end_date: str, regime_filter: bool = True) -> bool:
+# ── Param defaults / validation ────────────────────────────────────────────
+
+def _clean_params(p: dict) -> dict:
+    syms = p.get("symbols") or ["BTC", "ETH"]
+    syms = [s for s in ALL_SYMBOLS if s in syms] or ["BTC", "ETH"]
+    def num(k, d, lo, hi):
+        try:
+            return max(lo, min(float(p.get(k, d)), hi))
+        except (TypeError, ValueError):
+            return d
+    return {
+        "mode":          "sweep" if p.get("mode") == "sweep" else "single",
+        "start":         p.get("start"), "end": p.get("end"),
+        "split_date":    (p.get("split_date") or None),
+        "symbols":       syms,
+        "interval_hours": int(num("interval_hours", 6, 1, 24)),
+        "fvg_atr":       num("fvg_atr", 0.5, 0.1, 2.0),
+        "mss_mult":      num("mss_mult", 2.5, 1.0, 5.0),
+        "fvg_mult":      num("fvg_mult", 1.5, 1.0, 5.0),
+        "base_usd":      num("base_usd", 10.0, 1.0, 1000.0),
+        "regime_filter": bool(p.get("regime_filter", True)),
+        "sweep_param":   p.get("sweep_param") if p.get("sweep_param") in SWEEP_RANGES else "fvg_atr",
+    }
+
+
+def start(params: dict) -> bool:
     if is_running():
         return False
     _set(status="fetching", progress=0.0, message="Starting…", result=None,
          error=None, started_at=time.time(), finished_at=None)
-    threading.Thread(target=_run, args=(start_date, end_date, regime_filter), daemon=True,
+    threading.Thread(target=_run, args=(_clean_params(params),), daemon=True,
                      name="tjr-backtest").start()
     return True
 
 
+# ── Regime timeline (causal 1h) ────────────────────────────────────────────
+
 def _build_regime_lookup(symbol, sim_start_ts, end_ts):
-    """Causal regime at each completed 1h bar (TRENDING_UP/DOWN/CHOPPY/UNKNOWN),
-    for the backtest's regime filter. Returns (sorted ts list, regime list)."""
-    fetch = int(sim_start_ts - 14 * 86400)        # SMA200 on 1h needs ~9 days of warmup
+    fetch = int(sim_start_ts - 14 * 86400)        # SMA200 on 1h needs ~9 days warmup
     c = crypto_data.get_candles_range(symbol, "1h", fetch, end_ts)
     need = 200 + 20 + 1
     tslist, reglist = [], []
@@ -71,16 +100,20 @@ def _build_regime_lookup(symbol, sim_start_ts, end_ts):
     return tslist, reglist
 
 
-# ── Per-symbol signal detection (causal walk) ─────────────────────────────
+def _reg_at(reg_lookup, sym, ts):
+    if not reg_lookup or sym not in reg_lookup:
+        return "UNKNOWN"
+    tslist, reglist = reg_lookup[sym]
+    i = _bisect_right(tslist, ts) - 1
+    return reglist[i] if i >= 0 else "UNKNOWN"
 
-def _detect_events(candles, start_ts, end_ts):
-    """Walk a symbol's candles; return {ts: [event,…]} within [start,end] and
-    aggregate signal counts. Events: mss_bull/mss_bear/fvg_fill_bull/
-    fvg_fill_bear. Sweep+MSS are session-bound; FVGs form/fill 24/7."""
+
+# ── Causal signal detection ────────────────────────────────────────────────
+
+def _detect_events(candles, start_ts, end_ts, fvg_atr=0.5):
     events, counts = {}, {"mss_bull": 0, "mss_bear": 0, "fvg_fill": 0}
     sessions, active = {}, []
     n = len(candles)
-    # Precompute true ranges → rolling ATR(14) in O(n) (same value T.atr returns).
     trs = [0.0] * n
     for i in range(1, n):
         h, l, pc = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
@@ -92,24 +125,21 @@ def _detect_events(candles, start_ts, end_ts):
                             "swept": set(), "mss_done": False}
         S = sessions[td]; price = c["close"]; ev = []
 
-        # FVG formation (24/7, causal ATR(14) over the trailing window)
         if i >= 2:
             a = (sum(trs[i - 13:i + 1]) / 14) if i >= 14 else None
             if a:
                 c0, c2 = candles[i], candles[i - 2]
-                if c0["low"] > c2["high"] and (c0["low"] - c2["high"]) > 0.5 * a:
+                if c0["low"] > c2["high"] and (c0["low"] - c2["high"]) > fvg_atr * a:
                     active.append({"top": c0["low"], "bottom": c2["high"], "dir": "bull", "filled": False})
-                elif c0["high"] < c2["low"] and (c2["low"] - c0["high"]) > 0.5 * a:
+                elif c0["high"] < c2["low"] and (c2["low"] - c0["high"]) > fvg_atr * a:
                     active.append({"top": c2["low"], "bottom": c0["high"], "dir": "bear", "filled": False})
                 if len(active) > 40:
                     del active[:-40]
-        # FVG fill (24/7)
         for f in active:
             if not f["filled"] and f["bottom"] <= price <= f["top"]:
                 f["filled"] = True; counts["fvg_fill"] += 1
                 ev.append("fvg_fill_" + f["dir"])
 
-        # Sweep + MSS (session only)
         if S["asia"] and T.in_trading_session(dt):
             ah, al = S["asia"]
             if c["high"] > ah: S["swept"].add("high")
@@ -128,11 +158,11 @@ def _detect_events(candles, start_ts, end_ts):
     return events, counts
 
 
-# ── DCA simulation over a merged timeline (both variants) ─────────────────
+# ── Simulation (both DCA variants) ─────────────────────────────────────────
 
-def _new_pf():
-    return {"cash": INITIAL, "qty": {s: 0.0 for s in SYMBOLS}, "invested": 0.0,
-            "lots": [], "buys": [], "skip": {s: False for s in SYMBOLS},
+def _new_pf(symbols):
+    return {"cash": INITIAL, "qty": {s: 0.0 for s in symbols}, "invested": 0.0,
+            "lots": [], "buys": [], "skip": {s: False for s in symbols},
             "next_iv": None, "eq": [], "last_day": None}
 
 
@@ -145,74 +175,75 @@ def _buy(pf, sym, usd, price, btype, mult, ts, regime_=None):
     pf["lots"].append({"sym": sym, "price": price, "qty": q})
     pf["buys"].append({"timestamp": T._iso(ts), "symbol": sym, "type": btype,
                        "usd_amount": round(usd, 2), "price": round(price, 2),
-                       "multiplier": mult, "regime": regime_})
+                       "multiplier": round(mult, 3), "regime": regime_})
 
 
-def _reg_at(reg_lookup, sym, ts):
-    if not reg_lookup or sym not in reg_lookup:
-        return "UNKNOWN"
-    tslist, reglist = reg_lookup[sym]
-    i = _bisect_right(tslist, ts) - 1
-    return reglist[i] if i >= 0 else "UNKNOWN"
+def _eff(regime, mss_mult, fvg_mult, reg_filter):
+    """Effective multipliers given the regime (Phase A policy applied on top of
+    the tunable base multipliers)."""
+    if not reg_filter or regime in ("TRENDING_UP", "UNKNOWN"):
+        return {"mss": mss_mult, "fvg": fvg_mult, "interval": 1.0, "mss_on": True, "fvg_on": True}
+    if regime == "CHOPPY":
+        return {"mss": 0.0, "fvg": min(fvg_mult, 1.25), "interval": 1.0, "mss_on": False, "fvg_on": True}
+    if regime == "TRENDING_DOWN":
+        return {"mss": 0.0, "fvg": 0.0, "interval": 0.5, "mss_on": False, "fvg_on": False}
+    return {"mss": mss_mult, "fvg": fvg_mult, "interval": 1.0, "mss_on": True, "fvg_on": True}
 
 
-def _simulate(prices, ev_by_sym, start_ts, end_ts, reg_filter=False, reg_lookup=None):
-    iv = INTERVAL_HOURS * 3600
-    timeline = sorted({ts for s in SYMBOLS for ts in prices[s] if start_ts <= ts <= end_ts})
+def _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup):
+    iv = p["interval_hours"] * 3600
+    base, mssm, fvgm, rf = p["base_usd"], p["mss_mult"], p["fvg_mult"], p["regime_filter"]
+    timeline = sorted({ts for s in symbols for ts in prices[s] if start_ts <= ts <= end_ts})
     if not timeline:
         return None
-    std, tjr = _new_pf(), _new_pf()
+    std, tjr = _new_pf(symbols), _new_pf(symbols)
     std["next_iv"] = tjr["next_iv"] = timeline[0]
-    last = {s: 0.0 for s in SYMBOLS}
+    last = {s: 0.0 for s in symbols}
 
-    def policy(sym, ts):
-        return RG.sizing_policy(_reg_at(reg_lookup, sym, ts) if reg_filter else "UNKNOWN")
+    def eff(sym, ts):
+        return _eff(_reg_at(reg_lookup, sym, ts) if rf else "UNKNOWN", mssm, fvgm, rf)
 
     for ts in timeline:
-        for s in SYMBOLS:
+        for s in symbols:
             if ts in prices[s]:
                 last[s] = prices[s][ts]
-        # TJR-only event reactions (regime-gated when the filter is on)
-        for s in SYMBOLS:
+        for s in symbols:
             for et in ev_by_sym[s].get(ts, []):
-                p = prices[s].get(ts, last[s]); pol = policy(s, ts); reg = _reg_at(reg_lookup, s, ts) if reg_filter else None
-                if et == "mss_bull" and pol["mss_enabled"] and pol["mss"] > 0:
-                    _buy(tjr, s, BASE_DCA_USD * pol["mss"], p, "tjr_mss", pol["mss"], ts, reg)
+                pol = eff(s, ts); reg = _reg_at(reg_lookup, s, ts) if rf else None
+                pp = prices[s].get(ts, last[s])
+                if et == "mss_bull" and pol["mss_on"] and pol["mss"] > 0:
+                    _buy(tjr, s, base * pol["mss"], pp, "tjr_mss", pol["mss"], ts, reg)
                 elif et == "mss_bear":
                     tjr["skip"][s] = True
-                elif et == "fvg_fill_bull" and pol["fvg_enabled"] and pol["fvg"] > 0:
-                    _buy(tjr, s, BASE_DCA_USD * pol["fvg"], p, "tjr_fvg", pol["fvg"], ts, reg)
-        # standard interval DCA (regime never applies)
+                elif et == "fvg_fill_bull" and pol["fvg_on"] and pol["fvg"] > 0:
+                    _buy(tjr, s, base * pol["fvg"], pp, "tjr_fvg", pol["fvg"], ts, reg)
         while std["next_iv"] is not None and ts >= std["next_iv"]:
-            for s in SYMBOLS:
-                _buy(std, s, BASE_DCA_USD, last[s], "dca_interval", 1.0, std["next_iv"])
+            for s in symbols:
+                _buy(std, s, base, last[s], "dca_interval", 1.0, std["next_iv"])
             std["next_iv"] += iv
-        # tjr interval DCA (regime scales/pauses; bearish-MSS skip honoured)
         while tjr["next_iv"] is not None and ts >= tjr["next_iv"]:
-            for s in SYMBOLS:
+            for s in symbols:
                 if tjr["skip"][s]:
                     tjr["skip"][s] = False
                 else:
-                    pol = policy(s, tjr["next_iv"]); reg = _reg_at(reg_lookup, s, tjr["next_iv"]) if reg_filter else None
+                    pol = eff(s, tjr["next_iv"]); reg = _reg_at(reg_lookup, s, tjr["next_iv"]) if rf else None
                     if pol["interval"] > 0:
-                        _buy(tjr, s, BASE_DCA_USD * pol["interval"], last[s], "dca_interval", pol["interval"], tjr["next_iv"], reg)
+                        _buy(tjr, s, base * pol["interval"], last[s], "dca_interval", pol["interval"], tjr["next_iv"], reg)
             tjr["next_iv"] += iv
-        # daily equity snapshot
         day = T._dt(ts).date().isoformat()
         for pf in (std, tjr):
             if pf["last_day"] != day:
-                val = sum(pf["qty"][s] * last[s] for s in SYMBOLS)
+                val = sum(pf["qty"][s] * last[s] for s in symbols)
                 pf["eq"].append({"date": day, "equity": round(pf["cash"] + val, 2)})
                 pf["last_day"] = day
-    # finalise last point
     for pf in (std, tjr):
-        val = sum(pf["qty"][s] * last[s] for s in SYMBOLS)
+        val = sum(pf["qty"][s] * last[s] for s in symbols)
         if pf["eq"]:
             pf["eq"][-1]["equity"] = round(pf["cash"] + val, 2)
     return std, tjr, last
 
 
-def _metrics(pf, last):
+def _metrics(pf, last, symbols):
     eq = pf["eq"]
     final = eq[-1]["equity"] if eq else INITIAL
     wins = losses = gw = gl = 0
@@ -232,72 +263,104 @@ def _metrics(pf, last):
         if sd > 0:
             sharpe = m / sd * (365 ** 0.5)
     return {
-        "final_equity":     round(final, 2),
-        "total_return_pct": round((final / INITIAL - 1) * 100, 2),
-        "invested":         round(pf["invested"], 2),
-        "holdings_value":   round(sum(pf["qty"][s] * last[s] for s in SYMBOLS), 2),
-        "num_buys":         nb,
-        "win_rate":         round(wins / nb * 100, 1) if nb else 0.0,
-        "profit_factor":    (round(gw / gl, 2) if gl > 0 else (None if gw > 0 else 0.0)),
-        "max_drawdown_pct": round(max_dd, 2),
-        "sharpe":           round(sharpe, 2),
-        "equity_curve":     eq,
-        "drawdown_curve":   dd,
-        "buys":             pf["buys"][-100:],
+        "final_equity": round(final, 2), "total_return_pct": round((final / INITIAL - 1) * 100, 2),
+        "invested": round(pf["invested"], 2),
+        "holdings_value": round(sum(pf["qty"][s] * last[s] for s in symbols), 2),
+        "num_buys": nb, "win_rate": round(wins / nb * 100, 1) if nb else 0.0,
+        "profit_factor": (round(gw / gl, 2) if gl > 0 else (None if gw > 0 else 0.0)),
+        "max_drawdown_pct": round(max_dd, 2), "sharpe": round(sharpe, 2),
+        "equity_curve": eq, "drawdown_curve": dd, "buys": pf["buys"][-100:],
     }
 
 
-def _run(start_date, end_date, regime_filter=True):
-    try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
-        end_dt   = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
-        start_ts, end_ts = int(start_dt.timestamp()), int(end_dt.timestamp())
-        fetch_ts = int((start_dt - timedelta(days=2)).timestamp())   # asia + ATR warmup
+def _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p):
+    prices, ev_by_sym, counts = {}, {}, {"mss_bull": 0, "mss_bear": 0, "fvg_fill": 0}
+    for s in symbols:
+        ev, cnt = _detect_events(candles_by_sym[s], start_ts, end_ts, p["fvg_atr"])
+        ev_by_sym[s] = ev
+        prices[s] = {c["timestamp"]: c["close"] for c in candles_by_sym[s]}
+        for k in counts:
+            counts[k] += cnt[k]
+    sim = _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup)
+    if sim is None:
+        return None
+    std, tjr, last = sim
+    return {"signals": counts, "standard": _metrics(std, last, symbols), "tjr": _metrics(tjr, last, symbols)}
 
-        prices, ev_by_sym, counts = {}, {}, {"mss_bull": 0, "mss_bear": 0, "fvg_fill": 0}
-        for k, sym in enumerate(SYMBOLS):
-            _set(status="fetching", progress=0.1 + 0.3 * k / len(SYMBOLS),
-                 message=f"Fetching {sym} history…")
-            candles = crypto_data.get_candles_range(sym, "5m", fetch_ts, end_ts)
-            if not candles:
-                _set(status="error", error=f"No {sym} candles for that range (try a recent range; "
-                     f"5m history depth is limited).", finished_at=time.time())
+
+# ── Runner ─────────────────────────────────────────────────────────────────
+
+def _run(p):
+    try:
+        symbols = p["symbols"]
+        start_dt = datetime.strptime(p["start"], "%Y-%m-%d").replace(tzinfo=UTC)
+        end_dt   = datetime.strptime(p["end"], "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
+        start_ts, end_ts = int(start_dt.timestamp()), int(end_dt.timestamp())
+        fetch_ts = int((start_dt - timedelta(days=2)).timestamp())
+
+        candles_by_sym = {}
+        for k, sym in enumerate(symbols):
+            _set(status="fetching", progress=0.05 + 0.25 * k / len(symbols), message=f"Fetching {sym} 5m history…")
+            cs = crypto_data.get_candles_range(sym, "5m", fetch_ts, end_ts)
+            if not cs:
+                _set(status="error", error=f"No {sym} candles for that range (5m history depth is limited — keep it recent).",
+                     finished_at=time.time())
                 return
-            _set(status="running", progress=0.5 + 0.2 * k / len(SYMBOLS),
-                 message=f"Detecting {sym} TJR signals over {len(candles)} candles…")
-            ev, cnt = _detect_events(candles, start_ts, end_ts)
-            ev_by_sym[sym] = ev
-            prices[sym] = {c["timestamp"]: c["close"] for c in candles}
-            for kk in counts:
-                counts[kk] += cnt[kk]
+            candles_by_sym[sym] = cs
 
         reg_lookup = {}
-        if regime_filter:
-            for k, sym in enumerate(SYMBOLS):
-                _set(status="running", progress=0.75 + 0.05 * k / len(SYMBOLS),
-                     message=f"Building {sym} 1h regime timeline…")
+        if p["regime_filter"]:
+            for k, sym in enumerate(symbols):
+                _set(status="running", progress=0.32 + 0.12 * k / len(symbols), message=f"Building {sym} 1h regime…")
                 reg_lookup[sym] = _build_regime_lookup(sym, start_ts, end_ts)
 
-        _set(status="running", progress=0.85, message="Simulating standard vs TJR DCA…")
-        sim = _simulate(prices, ev_by_sym, start_ts, end_ts, reg_filter=regime_filter, reg_lookup=reg_lookup)
-        if sim is None:
+        if p["mode"] == "sweep":
+            sp = p["sweep_param"]; values = SWEEP_RANGES[sp]
+            rows = []
+            for i, v in enumerate(values):
+                _set(status="running", progress=0.5 + 0.48 * i / len(values),
+                     message=f"Sweep {sp}={v} ({i+1}/{len(values)})…")
+                pv = {**p, sp: v}
+                w = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, pv)
+                if not w:
+                    continue
+                m = w["tjr"]
+                rows.append({"value": v, "total_return_pct": m["total_return_pct"], "sharpe": m["sharpe"],
+                             "max_drawdown_pct": m["max_drawdown_pct"], "num_buys": m["num_buys"],
+                             "win_rate": m["win_rate"]})
+            best = max(rows, key=lambda r: r["sharpe"], default=None)
+            result = {"mode": "sweep", "sweep_param": sp, "params": p, "rows": rows,
+                      "best_sharpe_value": best["value"] if best else None,
+                      "caption": "More variants tested = higher chance of a false winner. "
+                                 "Confirm the top row on the validation split before trusting it."}
+            _set(status="done", progress=1.0, result=result, finished_at=time.time(),
+                 message=f"Sweep done — {len(rows)} variants of {sp}; best Sharpe @ {result['best_sharpe_value']}")
+            return
+
+        # single
+        _set(status="running", progress=0.55, message="Simulating standard vs TJR DCA…")
+        full = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p)
+        if not full:
             _set(status="error", error="No candles inside the selected range.", finished_at=time.time())
             return
-        std, tjr, last = sim
-        result = {
-            "label":   "TJR BACKTEST — Simulated, read-only (never writes the live ledger)",
-            "params":  {"start": start_date, "end": end_date, "symbols": SYMBOLS,
-                        "base_dca_usd": BASE_DCA_USD, "interval_hours": INTERVAL_HOURS,
-                        "initial_balance": INITIAL, "regime_filter": regime_filter},
-            "regime_filter": regime_filter,
-            "signals": counts,
-            "standard": _metrics(std, last),
-            "tjr":      _metrics(tjr, last),
-        }
+        result = {"mode": "single", "params": p, "regime_filter": p["regime_filter"],
+                  "label": "TJR BACKTEST — read-only (never writes the live ledger)",
+                  "signals": full["signals"], "standard": full["standard"], "tjr": full["tjr"]}
+
+        if p["split_date"]:
+            split_dt = datetime.strptime(p["split_date"][:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            split_ts = int(split_dt.timestamp())
+            if start_ts < split_ts < end_ts:
+                _set(status="running", progress=0.8, message="Train / validation split…")
+                tr = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, split_ts, p)
+                va = _backtest_window(candles_by_sym, reg_lookup, symbols, split_ts, end_ts, p)
+                result["split_date"] = p["split_date"][:10]
+                result["train"] = tr
+                result["validation"] = va
+
         _set(status="done", progress=1.0, result=result, finished_at=time.time(),
-             message=(f"Done — signals: {counts['mss_bull']}▲MSS / {counts['mss_bear']}▼MSS / "
-                      f"{counts['fvg_fill']} FVG fills | standard {result['standard']['total_return_pct']:+.1f}% "
-                      f"vs TJR {result['tjr']['total_return_pct']:+.1f}%"))
+             message=(f"Done — standard {full['standard']['total_return_pct']:+.1f}% "
+                      f"vs TJR {full['tjr']['total_return_pct']:+.1f}%"))
     except Exception as exc:  # noqa: BLE001
         import traceback; traceback.print_exc()
         _set(status="error", error=f"{type(exc).__name__}: {exc}", finished_at=time.time())

@@ -395,22 +395,35 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
       <span class="pill">READ-ONLY</span></div>
     <div class="card-body">
       <div class="bt-form">
-        <div class="bt-field"><label>Start</label><input type="date" id="bt-start"></div>
-        <div class="bt-field"><label>End</label><input type="date" id="bt-end"></div>
-        <div class="bt-field"><label>Strategy</label>
-          <select id="bt-strat"><option value="tjr">TJR-enhanced DCA</option><option value="standard">Standard DCA</option></select></div>
+        <div class="bt-field"><label>Mode</label>
+          <select id="bt-mode"><option value="single">Single run</option><option value="sweep">Sweep one param</option></select></div>
+        <div class="bt-field"><label>Symbols</label>
+          <select id="bt-syms"><option value="both">BTC + ETH</option><option value="BTC">BTC</option><option value="ETH">ETH</option></select></div>
+        <div class="bt-field"><label>DCA interval (h)</label>
+          <select id="bt-interval"><option>1</option><option>2</option><option>4</option><option selected>6</option><option>8</option><option>12</option></select></div>
+        <div class="bt-field"><label>Base buy USD</label><input type="number" id="bt-base" value="10" min="1" step="1" style="width:78px"></div>
+        <div class="bt-field"><label>FVG ATR · <span id="bt-fvgatr-v">0.5</span>×</label><input type="range" id="bt-fvgatr" min="0.3" max="1.0" step="0.05" value="0.5"></div>
+        <div class="bt-field"><label>MSS mult · <span id="bt-mssm-v">2.5</span>×</label><input type="range" id="bt-mssm" min="1.5" max="3.0" step="0.1" value="2.5"></div>
+        <div class="bt-field"><label>FVG mult · <span id="bt-fvgm-v">1.5</span>×</label><input type="range" id="bt-fvgm" min="1.0" max="2.5" step="0.1" value="1.5"></div>
         <div class="bt-field"><label>Regime filter</label>
           <select id="bt-regime"><option value="1">ON</option><option value="0">OFF</option></select></div>
-        <button class="btn" id="bt-run">RUN BACKTEST</button>
+        <div class="bt-field" id="bt-sweepwrap" style="display:none"><label>Sweep param</label>
+          <select id="bt-sweep"><option value="fvg_atr">FVG ATR</option><option value="interval_hours">DCA interval</option><option value="mss_mult">MSS mult</option><option value="fvg_mult">FVG mult</option><option value="base_usd">Base USD</option></select></div>
+        <div class="bt-field"><label>Start</label><input type="date" id="bt-start"></div>
+        <div class="bt-field"><label>End</label><input type="date" id="bt-end"></div>
+        <div class="bt-field" id="bt-splitwrap"><label>Split date (train/val)</label><input type="date" id="bt-split"></div>
+        <button class="btn" id="bt-run">RUN</button>
       </div>
-      <div class="bt-hint">Read-only — never writes the live ledger. Replays historical 5m BTC/ETH candles; compares interval-only DCA vs TJR-modulated DCA (5m history depth is limited, so keep the range recent — default 30 days).</div>
+      <div class="bt-hint">Read-only — never writes the live ledger. Replays real 5m candles. <b>Single</b> = one param set (+ optional train/validation split, shown side by side). <b>Sweep</b> = vary one param; the table highlights the <b>best Sharpe</b>, not best return. Keep the range recent (5m history depth is limited).</div>
       <div id="bt-progress" style="display:none"><div class="bt-bar-track"><div class="bt-bar" id="bt-bar"></div></div><div class="bt-msg" id="bt-msg"></div></div>
       <div id="bt-error" style="display:none;color:var(--red);font-family:var(--mono);font-size:.62rem;padding:8px 0"></div>
-      <div id="bt-results" style="display:none">
+
+      <!-- SINGLE results -->
+      <div id="bt-single" style="display:none">
         <div class="bt-signals" id="bt-signals"></div>
         <div class="bt-compare" id="bt-compare"></div>
         <div class="metric-row" style="margin:12px 0 1px">
-          <div class="metric"><div class="k">Total Return</div><div class="v" id="bt-ret">—</div></div>
+          <div class="metric"><div class="k">Total Return (TJR)</div><div class="v" id="bt-ret">—</div></div>
           <div class="metric"><div class="k">Max Drawdown</div><div class="v" id="bt-dd">—</div></div>
           <div class="metric"><div class="k">Sharpe</div><div class="v" id="bt-sharpe">—</div></div>
         </div>
@@ -420,11 +433,23 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
           <div class="metric"><div class="k">Profit Factor</div><div class="v" id="bt-pf">—</div></div>
         </div>
         <div class="bt-chart"><h4>EQUITY — STANDARD vs TJR</h4><div class="cw"><canvas id="bt-equity"></canvas></div></div>
-        <div class="bt-chart"><h4>DRAWDOWN (%) — SELECTED STRATEGY</h4><div class="cw"><canvas id="bt-dd-chart"></canvas></div></div>
-        <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--muted);letter-spacing:1px;margin:14px 0 6px">RECENT BUYS — SELECTED STRATEGY</h4>
+        <div class="bt-chart"><h4>DRAWDOWN (%) — TJR</h4><div class="cw"><canvas id="bt-dd-chart"></canvas></div></div>
+        <div id="bt-split-panel" style="display:none">
+          <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--gold);letter-spacing:1px;margin:16px 0 6px">▣ TRAIN → VALIDATION (anti-overfit) — confirm the edge survives out-of-sample</h4>
+          <div class="bt-compare" id="bt-tv"></div>
+        </div>
+        <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--muted);letter-spacing:1px;margin:14px 0 6px">RECENT TJR BUYS</h4>
         <div class="table-wrap" style="max-height:240px"><table>
-          <thead><tr><th>Time (UTC)</th><th>Sym</th><th>Type</th><th>USD</th><th>Price</th><th>×</th></tr></thead>
+          <thead><tr><th>Time (UTC)</th><th>Sym</th><th>Type</th><th>USD</th><th>Price</th><th>×</th><th>Regime</th></tr></thead>
           <tbody id="bt-buylog"></tbody></table></div>
+      </div>
+
+      <!-- SWEEP results -->
+      <div id="bt-sweep-res" style="display:none">
+        <div class="bt-signals" id="bt-sweep-cap"></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th id="bt-sw-h">Value</th><th>Return</th><th>Sharpe ▾</th><th>Max DD</th><th>Buys</th><th>Win%</th></tr></thead>
+          <tbody id="bt-sweep-body"></tbody></table></div>
       </div>
     </div>
   </div>
@@ -690,17 +715,41 @@ function drawTJRChart(){
 }
 window.addEventListener('resize', drawTJRChart);
 
-// ── TJR backtest ──────────────────────────────────────────────────────────
+// ── TJR backtest / tuning lab ─────────────────────────────────────────────
 let btEquityChart, btDDChart, BT_RESULT = null;
 (function(){ const t=new Date(), s=new Date(); s.setDate(t.getDate()-30);
   $('bt-end').value = t.toISOString().slice(0,10); $('bt-start').value = s.toISOString().slice(0,10); })();
+// slider value labels
+[['bt-fvgatr','bt-fvgatr-v'],['bt-mssm','bt-mssm-v'],['bt-fvgm','bt-fvgm-v']].forEach(([sl,lb])=>{
+  $(sl).addEventListener('input', ()=> $(lb).textContent = (+$(sl).value).toFixed(2).replace(/0$/,'') ); });
+// mode toggle shows/hides sweep param + split
+$('bt-mode').addEventListener('change', ()=>{
+  const sweep = $('bt-mode').value==='sweep';
+  $('bt-sweepwrap').style.display = sweep ? '' : 'none';
+  $('bt-splitwrap').style.display = sweep ? 'none' : '';
+});
+
+function btParams(){
+  const sy = $('bt-syms').value;
+  return {
+    mode: $('bt-mode').value,
+    start: $('bt-start').value, end: $('bt-end').value,
+    split_date: ($('bt-mode').value==='single' ? ($('bt-split').value||null) : null),
+    symbols: sy==='both' ? ['BTC','ETH'] : [sy],
+    interval_hours: parseInt($('bt-interval').value,10)||6,
+    fvg_atr: parseFloat($('bt-fvgatr').value), mss_mult: parseFloat($('bt-mssm').value),
+    fvg_mult: parseFloat($('bt-fvgm').value), base_usd: parseFloat($('bt-base').value)||10,
+    regime_filter: $('bt-regime').value==='1',
+    sweep_param: $('bt-sweep').value,
+  };
+}
 
 $('bt-run').addEventListener('click', async () => {
-  $('bt-error').style.display='none'; $('bt-results').style.display='none';
+  $('bt-error').style.display='none'; $('bt-single').style.display='none'; $('bt-sweep-res').style.display='none';
   $('bt-run').disabled=true; $('bt-progress').style.display='block'; $('bt-bar').style.width='5%'; $('bt-msg').textContent='Starting…';
   try {
     const res = await (await fetch('/api/tjr/backtest_run', { method:'POST', cache:'no-store',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({ start:$('bt-start').value, end:$('bt-end').value, regime_filter: $('bt-regime').value==='1' }) })).json();
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(btParams()) })).json();
     if (!res.started){ btErr(res.reason||'Could not start'); return; }
     btPoll();
   } catch(e){ btErr('Request failed: '+e); }
@@ -716,20 +765,23 @@ async function btPoll(){
     setTimeout(btPoll, 1200);
   } catch(e){ setTimeout(btPoll, 2000); }
 }
-$('bt-strat').addEventListener('change', () => { if (BT_RESULT) renderBT(); });
+
+const pct = n => (n>=0?'+':'')+(+n).toFixed(2)+'%';
+function compareHTML(std, tjr, labelA, labelB){
+  return [[labelA,std],[labelB,tjr]].map(([lab,mm])=>`<div class="bt-col ${lab.includes('TJR')||lab.includes('VALID')?'sel':''}">
+    <div class="lbl">${lab}</div>
+    <div class="ret ${mm.total_return_pct>=0?'up':'down'}">${pct(mm.total_return_pct)}</div>
+    <div style="font-size:.55rem;color:var(--muted)">Sharpe ${(+mm.sharpe).toFixed(2)} · DD ${mm.max_drawdown_pct.toFixed(1)}% · ${mm.num_buys} buys · $${mm.invested}</div></div>`).join('');
+}
 
 function renderBT(){
   const r = BT_RESULT; if (!r) return;
-  $('bt-results').style.display='block';
-  const sel = $('bt-strat').value, m = r[sel], sg = r.signals;
-  $('bt-signals').innerHTML = `Signals ${r.params.start} → ${r.params.end}: <b>${sg.mss_bull}</b> ▲ bullish MSS · <b>${sg.mss_bear}</b> ▼ bearish MSS · <b>${sg.fvg_fill}</b> FVG fills &nbsp;·&nbsp; regime filter: <b style="color:${r.regime_filter?'var(--green)':'var(--muted)'}">${r.regime_filter?'ON':'OFF'}</b>`;
-  $('bt-compare').innerHTML = ['standard','tjr'].map(k => {
-    const mm = r[k], isSel = k===sel;
-    return `<div class="bt-col ${isSel?'sel':''}"><div class="lbl">${k==='tjr'?'TJR-ENHANCED DCA':'STANDARD DCA'}${isSel?' · SELECTED':''}</div>
-      <div class="ret ${mm.total_return_pct>=0?'up':'down'}">${(mm.total_return_pct>=0?'+':'')+mm.total_return_pct.toFixed(2)}%</div>
-      <div style="font-size:.55rem;color:var(--muted)">$${mm.invested} invested · ${mm.num_buys} buys</div></div>`;
-  }).join('');
-  $('bt-ret').textContent = (m.total_return_pct>=0?'+':'')+m.total_return_pct.toFixed(2)+'%'; $('bt-ret').className='v '+(m.total_return_pct>=0?'up':'down');
+  if (r.mode === 'sweep'){ renderSweep(r); return; }
+  $('bt-sweep-res').style.display='none'; $('bt-single').style.display='block';
+  const m = r.tjr, sg = r.signals, p = r.params;
+  $('bt-signals').innerHTML = `${p.symbols.join('+')} · ${p.start} → ${p.end} · int ${p.interval_hours}h · FVG ${(+p.fvg_atr).toFixed(2)}×ATR · MSS ${p.mss_mult}× · FVG ${p.fvg_mult}× · regime <b style="color:${p.regime_filter?'var(--green)':'var(--muted)'}">${p.regime_filter?'ON':'OFF'}</b> &nbsp;|&nbsp; signals: <b>${sg.mss_bull}</b>▲MSS <b>${sg.mss_bear}</b>▼MSS <b>${sg.fvg_fill}</b> FVG`;
+  $('bt-compare').innerHTML = compareHTML(r.standard, r.tjr, 'STANDARD DCA', 'TJR-ENHANCED DCA');
+  $('bt-ret').textContent = pct(m.total_return_pct); $('bt-ret').className='v '+(m.total_return_pct>=0?'up':'down');
   $('bt-dd').textContent = m.max_drawdown_pct.toFixed(2)+'%';
   $('bt-sharpe').textContent = (+m.sharpe).toFixed(2);
   $('bt-buys').textContent = m.num_buys;
@@ -737,13 +789,34 @@ function renderBT(){
   $('bt-pf').textContent = m.profit_factor==null ? '∞' : (+m.profit_factor).toFixed(2);
   drawBTEquity(r.standard.equity_curve, r.tjr.equity_curve);
   drawBTDD(m.drawdown_curve);
+  // train / validation
+  if (r.train && r.validation){
+    $('bt-split-panel').style.display='block';
+    $('bt-tv').innerHTML = compareHTML(r.train.tjr, r.validation.tjr, `TRAIN (→ ${r.split_date})`, `VALIDATION (${r.split_date} →)`);
+  } else { $('bt-split-panel').style.display='none'; }
   const tb = $('bt-buylog'), buys = [...m.buys].reverse();
   tb.innerHTML = buys.length ? buys.map(b => `<tr>
     <td style="color:var(--muted)">${String(b.timestamp).slice(0,16).replace('T',' ')}</td>
     <td style="color:var(--gold)">${b.symbol}</td>
     <td class="${b.type==='tjr_mss'?'t-mss':b.type==='tjr_fvg'?'t-fvg':'t-dca'}">${b.type}</td>
-    <td>${money(b.usd_amount)}</td><td>${money(b.price)}</td><td>×${(+b.multiplier).toFixed(1)}</td></tr>`).join('')
-    : '<tr><td colspan="6" class="empty">No buys</td></tr>';
+    <td>${money(b.usd_amount)}</td><td>${money(b.price)}</td><td>×${(+b.multiplier).toFixed(2)}</td>
+    <td style="color:var(--muted)">${b.regime||'—'}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="empty">No buys</td></tr>';
+}
+
+function renderSweep(r){
+  $('bt-single').style.display='none'; $('bt-sweep-res').style.display='block';
+  $('bt-sw-h').textContent = ({fvg_atr:'FVG ATR ×',interval_hours:'Interval h',mss_mult:'MSS ×',fvg_mult:'FVG ×',base_usd:'Base $'})[r.sweep_param]||'Value';
+  $('bt-sweep-cap').innerHTML = `⚠ ${r.caption}`;
+  const rows = [...r.rows].sort((a,b)=> b.sharpe - a.sharpe);   // best Sharpe first
+  $('bt-sweep-body').innerHTML = rows.map(row=>{
+    const best = row.value===r.best_sharpe_value;
+    return `<tr style="${best?'background:rgba(27,255,155,.08)':''}">
+      <td style="color:var(--gold)">${row.value}${best?' ★':''}</td>
+      <td class="${row.total_return_pct>=0?'up':'down'}">${pct(row.total_return_pct)}</td>
+      <td class="${best?'up':''}">${(+row.sharpe).toFixed(2)}</td>
+      <td>${row.max_drawdown_pct.toFixed(2)}%</td><td>${row.num_buys}</td><td>${row.win_rate}%</td></tr>`;
+  }).join('');
 }
 const BTCHART = { color:'#C9D1D9', maintainAspectRatio:false, elements:{point:{radius:0}},
   scales:{ x:{ticks:{color:'#4A5568',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(6,182,212,.06)'}},
