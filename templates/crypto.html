@@ -394,6 +394,23 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
     </div>
   </div>
 
+  <!-- Signal analysis -->
+  <div class="card">
+    <div class="card-head"><span>> SIGNAL <span class="accent">ANALYSIS</span> — where does the edge live?</span><span class="pill" id="an-buys">— buys</span></div>
+    <div class="card-body">
+      <div class="bt-signals" id="an-readout" style="color:var(--cyan)">analysing…</div>
+      <div class="bt-chart"><h4>TOTAL P&amp;L BY SIGNAL TYPE (unrealised, mark-to-market)</h4><div class="cw" style="height:170px"><canvas id="an-bar"></canvas></div></div>
+      <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--muted);letter-spacing:1px;margin:14px 0 6px">SIGNAL TYPE × REGIME — AVG P&amp;L PER BUY</h4>
+      <div class="table-wrap" style="max-height:240px"><table>
+        <thead><tr><th>Signal</th><th>Regime</th><th>Buys</th><th>Avg P&amp;L / buy</th><th>Total P&amp;L</th></tr></thead>
+        <tbody id="an-grid"><tr><td colspan="5" class="empty">No buys yet</td></tr></tbody></table></div>
+      <h4 style="font-family:var(--mono);font-size:.55rem;color:var(--muted);letter-spacing:1px;margin:14px 0 6px">BY MULTIPLIER — do bigger conviction buys earn it?</h4>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Multiplier</th><th>Buys</th><th>USD</th><th>Avg P&amp;L / buy</th><th>Total P&amp;L</th><th>Win %</th></tr></thead>
+        <tbody id="an-mult"></tbody></table></div>
+    </div>
+  </div>
+
   <!-- Alert settings -->
   <div class="card">
     <div class="card-head"><span>> ALERTS <span class="accent">— MULTI-CHANNEL</span></span><span class="pill" id="al-status">—</span></div>
@@ -986,6 +1003,37 @@ async function saveAlerts(){
 }
 document.querySelectorAll('[data-ch],[data-ev]').forEach(cb=> cb.addEventListener('change', saveAlerts));
 
+// ── Signal analysis (Phase D) ─────────────────────────────────────────────
+let anBar;
+const PRETTY = {tjr_mss:'MSS', tjr_fvg:'FVG', dca_interval:'Interval'};
+const TCLS = t=> t==='tjr_mss'?'t-mss':t==='tjr_fvg'?'t-fvg':'t-dca';
+async function refreshAnalysis(){
+  try {
+    const a = await jget('/api/tjr/analysis');
+    $('an-buys').textContent = `${a.total_buys} buys`;
+    $('an-readout').innerHTML = '◆ ' + (a.readout||'');
+    drawAnBar((a.by_type||[]).map(t=>PRETTY[t.key]||t.key), (a.by_type||[]).map(t=>t.total_pnl));
+    const g = [...(a.grid||[])].sort((x,y)=> y.avg_pnl - x.avg_pnl);
+    $('an-grid').innerHTML = g.length ? g.map(c=>`<tr>
+      <td class="${TCLS(c.type)}">${PRETTY[c.type]||c.type}</td>
+      <td style="color:var(--muted)">${c.regime}</td><td>${c.count}</td>
+      <td class="${c.avg_pnl>=0?'up':'down'}">${money(c.avg_pnl)}</td>
+      <td class="${c.total_pnl>=0?'up':'down'}">${money(c.total_pnl)}</td></tr>`).join('')
+      : '<tr><td colspan="5" class="empty">No buys yet</td></tr>';
+    $('an-mult').innerHTML = (a.by_multiplier||[]).length ? a.by_multiplier.map(m=>`<tr>
+      <td style="color:var(--gold)">${m.key}</td><td>${m.count}</td><td>${money(m.usd)}</td>
+      <td class="${m.avg_pnl>=0?'up':'down'}">${money(m.avg_pnl)}</td>
+      <td class="${m.total_pnl>=0?'up':'down'}">${money(m.total_pnl)}</td><td>${m.win_rate}%</td></tr>`).join('')
+      : '<tr><td colspan="6" class="empty">—</td></tr>';
+  } catch(e){}
+}
+function drawAnBar(labels, vals){
+  if (anBar) anBar.destroy();
+  anBar = new Chart($('an-bar'), { type:'bar',
+    data:{ labels, datasets:[{ data:vals, backgroundColor: vals.map(v=> v>=0?'rgba(27,255,155,.7)':'rgba(255,59,107,.7)'), borderRadius:3 }] },
+    options:{ ...BTCHART, plugins:{ legend:{display:false} } } });
+}
+
 // ── Boot + bootstrap ──────────────────────────────────────────────────────
 (function boot(){
   const overlay = $('boot-overlay');
@@ -999,13 +1047,14 @@ document.querySelectorAll('[data-ch],[data-ev]').forEach(cb=> cb.addEventListene
   const iv = setInterval(()=>{ i++; el.textContent=full.slice(0,i); if(i>=full.length){ clearInterval(iv); setTimeout(dismiss,600); } }, 22);
 })();
 
-refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory(); refreshChartCandles(); refreshSpark(); loadAlerts();
+refreshPrices(); refreshStatus(); refreshPortfolio(); refreshHistory(); refreshChartCandles(); refreshSpark(); loadAlerts(); refreshAnalysis();
 setInterval(refreshPrices, 5000);
 setInterval(refreshStatus, 10000);
 setInterval(refreshPortfolio, 10000);
 setInterval(refreshHistory, 10000);
 setInterval(refreshChartCandles, 300000);   // candles every 5 min; overlays redraw on each status/history tick
 setInterval(refreshSpark, 300000);          // P&L sparkline every 5 min
+setInterval(refreshAnalysis, 60000);        // signal analysis every 60s
 </script>
 </body>
 </html>

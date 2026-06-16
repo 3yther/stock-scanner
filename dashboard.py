@@ -300,6 +300,14 @@ def api_tjr_backtest_status():
     return jsonify(tjr_backtest.get_status())
 
 
+@app.route("/api/tjr/analysis")
+def api_tjr_analysis():
+    """Historical signal analysis (read-only) over tjr_buys: P&L by signal type /
+    symbol / regime / multiplier + a type×regime grid + an auto readout."""
+    from quant import analysis
+    return jsonify(analysis.compute())
+
+
 @app.route("/api/alerts/settings", methods=["GET", "POST"])
 def api_alerts_settings():
     """Get/patch multi-channel alert settings (channels + event toggles)."""
