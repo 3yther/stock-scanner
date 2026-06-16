@@ -145,12 +145,18 @@ def api_tjr_status():
     td  = tjr_strategy.trading_date_for(now).isoformat()
     out = {"trading_date": td, "in_session": tjr_strategy.in_trading_session(now),
            "symbols": {}}
+    from quant import regime
+    out["regime_filter"] = config.CRYPTO_REGIME_FILTER
     for sym in tjr_strategy.SYMBOLS:
         asia   = crypto_db.get_asia_range(sym, td)
         swept  = {s["direction"] for s in crypto_db.get_sweeps_on(sym, td)}
         mss    = crypto_db.get_latest_mss(sym)
         active = crypto_db.get_active_fvgs(sym, 20)
         status = " + ".join(f"{d} swept" for d in ("high", "low") if d in swept) or "no sweep yet"
+        try:
+            rg = regime.for_symbol(sym, config.CRYPTO_REGIME_INTERVAL)
+        except Exception:
+            rg = {"regime": "UNKNOWN", "adx": None, "sma_slope": None, "atr_pctile": None}
         out["symbols"][sym] = {
             "asia_high":        asia["asia_high"] if asia else None,
             "asia_low":         asia["asia_low"]  if asia else None,
@@ -160,6 +166,9 @@ def api_tjr_status():
             "latest_mss":       ({"direction": mss["direction"], "time": mss["timestamp"],
                                   "price": mss["price"]} if mss else None),
             "active_fvg_count": len(active),
+            "regime":           rg.get("regime", "UNKNOWN"),
+            "regime_detail":    {"adx": rg.get("adx"), "sma_slope": rg.get("sma_slope"),
+                                 "atr_pctile": rg.get("atr_pctile")},
         }
     return jsonify(out)
 
@@ -277,11 +286,12 @@ def api_tjr_backtest_run():
     today = datetime.now(timezone.utc).date()
     end   = (body.get("end")   or today.isoformat())[:10]
     start = (body.get("start") or (today - timedelta(days=30)).isoformat())[:10]
+    regime_filter = bool(body.get("regime_filter", True))
     if tjr_backtest.is_running():
         return jsonify({"started": False, "reason": "A backtest is already running"}), 409
-    started = tjr_backtest.start(start, end)
-    print(f"[TJR BT] run requested: {start}→{end} started={started}", flush=True)
-    return jsonify({"started": started, "start": start, "end": end})
+    started = tjr_backtest.start(start, end, regime_filter)
+    print(f"[TJR BT] run requested: {start}→{end} regime_filter={regime_filter} started={started}", flush=True)
+    return jsonify({"started": started, "start": start, "end": end, "regime_filter": regime_filter})
 
 
 @app.route("/api/tjr/backtest_status")

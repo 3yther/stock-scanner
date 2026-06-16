@@ -63,6 +63,11 @@ LIVE_SIZING_MODE    = "vol_conviction"   # "flat" | "vol_conviction"
 LIVE_EXIT_MODE      = "trail_only"       # "fixed_tp" | "trail_only"
 LIVE_MAX_POSITIONS  = 5                  # max simultaneous open positions (live bot)
 
+# ── Crypto Bot regime filter ─────────────────────────────────────────────────
+CRYPTO_REGIME_FILTER   = True    # regime-aware TJR sizing (default ON)
+CRYPTO_REGIME_INTERVAL = "1h"    # timeframe the regime is computed on
+CRYPTO_REGIME_REFRESH  = 600     # seconds between regime re-checks (1h regime is slow)
+
 # Scan cadence depends on market state (chosen per-scan in scanner.run_loop).
 SCAN_INTERVAL_OPEN   = 300    # market OPEN   → scan every 5 minutes
 SCAN_INTERVAL_CLOSED = 1800   # market CLOSED → scan every 30 minutes

@@ -399,6 +399,8 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
         <div class="bt-field"><label>End</label><input type="date" id="bt-end"></div>
         <div class="bt-field"><label>Strategy</label>
           <select id="bt-strat"><option value="tjr">TJR-enhanced DCA</option><option value="standard">Standard DCA</option></select></div>
+        <div class="bt-field"><label>Regime filter</label>
+          <select id="bt-regime"><option value="1">ON</option><option value="0">OFF</option></select></div>
         <button class="btn" id="bt-run">RUN BACKTEST</button>
       </div>
       <div class="bt-hint">Read-only — never writes the live ledger. Replays historical 5m BTC/ETH candles; compares interval-only DCA vs TJR-modulated DCA (5m history depth is limited, so keep the range recent — default 30 days).</div>
@@ -519,12 +521,17 @@ async function refreshStatus(){
         ? `<span class="badge ${mss.direction==='bull'?'b-bull':'b-bear'}">${mss.direction==='bull'?'▲ BULLISH':'▼ BEARISH'}</span> <span class="v">${money(mss.price)}</span> <span style="color:var(--muted)">${(mss.time||'').slice(11,16)} UTC</span>`
         : '<span class="badge b-none">none</span>';
       const sweepCls = (s.sweep_status && s.sweep_status!=='no sweep yet') ? 'b-swept' : 'b-none';
+      const reg = s.regime || 'UNKNOWN';
+      const regCls = reg==='TRENDING_UP'?'b-bull':reg==='TRENDING_DOWN'?'b-bear':reg==='CHOPPY'?'b-swept':'b-none';
+      const regLbl = {TRENDING_UP:'▲ TRENDING UP',TRENDING_DOWN:'▼ TRENDING DOWN',CHOPPY:'≈ CHOPPY',UNKNOWN:'— UNKNOWN'}[reg]||reg;
+      const rd = s.regime_detail||{};
       const fvgs2 = byFvg[sym] || [];
       const fvgHtml = fvgs2.length
         ? fvgs2.map(f => `<div class="fvg-item"><span class="${f.direction==='bull'?'up':'down'}">${f.direction==='bull'?'▲':'▼'} ${f.direction}</span><span class="zone">${money(f.bottom_price)} – ${money(f.top_price)}</span></div>`).join('')
         : '<div class="empty">no active FVG zones</div>';
       return `<div class="sym-block">
-        <div class="sym-tag"><span>◆ ${sym}-USD</span><span class="px">${money(LIVE[sym])}</span></div>
+        <div class="sym-tag"><span>◆ ${sym}-USD <span class="badge ${regCls}" style="margin-left:6px">${regLbl}</span></span><span class="px">${money(LIVE[sym])}</span></div>
+        <div class="row"><span class="k">REGIME (1H)</span><span class="v" style="color:var(--muted)">ADX ${rd.adx!=null?(+rd.adx).toFixed(0):'—'} · slope ${rd.sma_slope!=null?(+rd.sma_slope>=0?'+':'')+(+rd.sma_slope).toFixed(2)+'%':'—'} · ATR pctl ${rd.atr_pctile!=null?rd.atr_pctile:'—'}</span></div>
         <div class="row"><span class="k">ASIA RANGE (H/L)</span><span class="v">${s.asia_high!=null?money(s.asia_high):'—'} / ${s.asia_low!=null?money(s.asia_low):'—'}</span></div>
         <div class="row"><span class="k">SWEEP STATUS</span><span class="badge ${sweepCls}">${(s.sweep_status||'no sweep yet').toUpperCase()}</span></div>
         <div class="row"><span class="k">LATEST MSS</span><span class="v">${mssHtml}</span></div>
@@ -693,7 +700,7 @@ $('bt-run').addEventListener('click', async () => {
   $('bt-run').disabled=true; $('bt-progress').style.display='block'; $('bt-bar').style.width='5%'; $('bt-msg').textContent='Starting…';
   try {
     const res = await (await fetch('/api/tjr/backtest_run', { method:'POST', cache:'no-store',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({ start:$('bt-start').value, end:$('bt-end').value }) })).json();
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({ start:$('bt-start').value, end:$('bt-end').value, regime_filter: $('bt-regime').value==='1' }) })).json();
     if (!res.started){ btErr(res.reason||'Could not start'); return; }
     btPoll();
   } catch(e){ btErr('Request failed: '+e); }
@@ -715,7 +722,7 @@ function renderBT(){
   const r = BT_RESULT; if (!r) return;
   $('bt-results').style.display='block';
   const sel = $('bt-strat').value, m = r[sel], sg = r.signals;
-  $('bt-signals').innerHTML = `Signals ${r.params.start} → ${r.params.end}: <b>${sg.mss_bull}</b> ▲ bullish MSS · <b>${sg.mss_bear}</b> ▼ bearish MSS · <b>${sg.fvg_fill}</b> FVG fills`;
+  $('bt-signals').innerHTML = `Signals ${r.params.start} → ${r.params.end}: <b>${sg.mss_bull}</b> ▲ bullish MSS · <b>${sg.mss_bear}</b> ▼ bearish MSS · <b>${sg.fvg_fill}</b> FVG fills &nbsp;·&nbsp; regime filter: <b style="color:${r.regime_filter?'var(--green)':'var(--muted)'}">${r.regime_filter?'ON':'OFF'}</b>`;
   $('bt-compare').innerHTML = ['standard','tjr'].map(k => {
     const mm = r[k], isSel = k===sel;
     return `<div class="bt-col ${isSel?'sel':''}"><div class="lbl">${k==='tjr'?'TJR-ENHANCED DCA':'STANDARD DCA'}${isSel?' · SELECTED':''}</div>

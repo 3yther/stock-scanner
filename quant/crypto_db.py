@@ -87,7 +87,7 @@ _DDL_PG = [
          id SERIAL PRIMARY KEY, timestamp TEXT NOT NULL, symbol TEXT NOT NULL,
          type TEXT NOT NULL, usd_amount DOUBLE PRECISION NOT NULL,
          price DOUBLE PRECISION NOT NULL, multiplier DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-         created_at TIMESTAMP DEFAULT now())""",
+         regime TEXT, created_at TIMESTAMP DEFAULT now())""",
 ]
 
 _DDL_SQLITE = [
@@ -111,7 +111,7 @@ _DDL_SQLITE = [
     """CREATE TABLE IF NOT EXISTS tjr_buys (
          id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, symbol TEXT NOT NULL,
          type TEXT NOT NULL, usd_amount REAL NOT NULL, price REAL NOT NULL,
-         multiplier REAL NOT NULL DEFAULT 1.0, created_at TEXT DEFAULT (datetime('now')))""",
+         multiplier REAL NOT NULL DEFAULT 1.0, regime TEXT, created_at TEXT DEFAULT (datetime('now')))""",
 ]
 
 
@@ -122,10 +122,14 @@ def init_tjr_db():
             cur = conn.cursor()
             for ddl in _DDL_PG:
                 cur.execute(ddl)
+            cur.execute("ALTER TABLE tjr_buys ADD COLUMN IF NOT EXISTS regime TEXT")  # migrate existing
             cur.close()
         else:
             for ddl in _DDL_SQLITE:
                 conn.execute(ddl)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(tjr_buys)")]
+            if "regime" not in cols:                                                  # migrate existing
+                conn.execute("ALTER TABLE tjr_buys ADD COLUMN regime TEXT")
     print(f"[TJR DB] tables ready on {_db.db_location()}", flush=True)
 
 
@@ -195,10 +199,10 @@ def get_recent_fvgs(symbol: str, limit: int = 40) -> list[dict]:
                   (symbol, limit))
 
 
-def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0):
-    return _insert("""INSERT INTO tjr_buys (timestamp, symbol, type, usd_amount, price, multiplier)
-                      VALUES (?, ?, ?, ?, ?, ?)""",
-                   (timestamp, symbol, type_, usd_amount, price, multiplier))
+def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0, regime=None):
+    return _insert("""INSERT INTO tjr_buys (timestamp, symbol, type, usd_amount, price, multiplier, regime)
+                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (timestamp, symbol, type_, usd_amount, price, multiplier, regime))
 
 
 def get_recent_buys(limit: int = 50) -> list[dict]:

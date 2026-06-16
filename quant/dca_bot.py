@@ -20,8 +20,9 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import config
 import notifier
-from quant import crypto_data, crypto_db, tjr_strategy
+from quant import crypto_data, crypto_db, tjr_strategy, regime
 
 UTC = timezone.utc
 
@@ -50,6 +51,9 @@ class CryptoDCABot:
         self.prices   = {s: 0.0 for s in self.symbols}
         self._skip_next   = {s: False for s in self.symbols}
         self._next_interval = {s: 0.0 for s in self.symbols}
+        self._regime      = {s: "UNKNOWN" for s in self.symbols}   # current regime per symbol
+        self._regime_data = {s: {} for s in self.symbols}
+        self._regime_ts   = 0.0
         self._lock    = threading.Lock()
         self._running = False
         self._reconstruct()
@@ -81,22 +85,41 @@ class CryptoDCABot:
 
     # ── Buying ────────────────────────────────────────────────────────────
 
-    def _buy(self, symbol, usd, price, type_, multiplier):
+    def _buy(self, symbol, usd, price, type_, multiplier, regime_=None):
         if price <= 0:
             return
         usd = min(usd, self.balance)
         if usd < 0.01:
             print(f"[DCA] {symbol} {type_}: insufficient balance, skipping", flush=True)
             return
+        reg = regime_ or self._regime.get(symbol)
         qty = usd / price
         with self._lock:
             self.balance -= usd
             self.holdings[symbol] += qty
         ts = datetime.now(UTC).isoformat()
-        crypto_db.log_buy(symbol, ts, type_, round(usd, 2), round(price, 2), multiplier)
+        crypto_db.log_buy(symbol, ts, type_, round(usd, 2), round(price, 2), multiplier, reg)
         print(f"[DCA] BUY {symbol} ${usd:,.2f} @ ${price:,.2f} "
-              f"({type_} ×{multiplier}) | bal ${self.balance:,.2f} | {symbol} {self.holdings[symbol]:.6f}",
+              f"({type_} ×{multiplier} · {reg}) | bal ${self.balance:,.2f} | {symbol} {self.holdings[symbol]:.6f}",
               flush=True)
+
+    # ── Regime (re-checked slowly; 1h regime barely moves) ────────────────
+
+    def _refresh_regime(self):
+        """Recompute the per-symbol regime (always — so it's logged/displayed
+        even when the filter is off; only the *policy* is gated by the flag)."""
+        if time.time() - self._regime_ts < config.CRYPTO_REGIME_REFRESH:
+            return
+        self._regime_ts = time.time()
+        for s in self.symbols:
+            try:
+                r = regime.for_symbol(s, config.CRYPTO_REGIME_INTERVAL)
+                self._regime[s] = r.get("regime", "UNKNOWN")
+                self._regime_data[s] = r
+            except Exception as exc:
+                print(f"[DCA] regime {s} error: {exc}", flush=True)
+        print(f"[DCA] regime: {{ {', '.join(f'{s}:{self._regime[s]}' for s in self.symbols)} }}"
+              f" (filter={'ON' if config.CRYPTO_REGIME_FILTER else 'OFF'})", flush=True)
 
     def _alert(self, headline: str, symbol: str, signal_price: float):
         """Email a Crypto Bot TJR alert (no-op if email isn't configured)."""
@@ -110,6 +133,7 @@ class CryptoDCABot:
 
     def _cycle(self):
         now = datetime.now(UTC)
+        self._refresh_regime()
         for sym in self.symbols:
             try:
                 candles = crypto_data.get_candles(sym, "5m", CANDLE_LIMIT)
@@ -120,33 +144,46 @@ class CryptoDCABot:
 
                 res = tjr_strategy.process(sym, candles, live_price=price, now=now)
 
-                # Bullish MSS → 2.5× immediate; Bearish MSS → skip next interval.
+                # Regime-aware sizing policy (flag gates whether it's applied).
+                reg = self._regime.get(sym, "UNKNOWN")
+                pol = regime.sizing_policy(reg) if config.CRYPTO_REGIME_FILTER \
+                      else regime.sizing_policy("UNKNOWN")   # UNKNOWN = full weight
+
+                # Bullish MSS → scaled buy (regime-permitting); Bearish → skip next interval.
                 if res.get("mss"):
                     mdir   = res["mss"]["direction"]
                     sig_px = float(res["mss"]["price"])
                     if mdir == "bull":
-                        self._buy(sym, self.base_dca_usd * MSS_MULT, price, "tjr_mss", MSS_MULT)
-                        self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — buying 2.5×", sym, sig_px)
+                        if pol["mss_enabled"] and pol["mss"] > 0:
+                            self._buy(sym, self.base_dca_usd * pol["mss"], price, "tjr_mss", pol["mss"], reg)
+                            self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — buying {pol['mss']:g}×", sym, sig_px)
+                        else:
+                            self._alert(f"Crypto Bot TJR: Bullish MSS on {sym} — scaling suppressed ({reg})", sym, sig_px)
                     else:
                         self._skip_next[sym] = True
                         print(f"[DCA] {sym} bearish MSS — next interval buy skipped", flush=True)
                         self._alert(f"Crypto Bot TJR: Bearish MSS on {sym} — skipping next buy", sym, sig_px)
 
-                # FVG zone entries: bullish → buy 1.5× + alert; bearish → alert only.
+                # FVG zone entries: bullish → buy (regime mult); bearish → alert only.
                 filled = res.get("filled_fvgs", [])
                 if any(f.get("direction") == "bull" for f in filled):
-                    self._buy(sym, self.base_dca_usd * FVG_MULT, price, "tjr_fvg", FVG_MULT)
-                    self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying 1.5×", sym, price)
+                    if pol["fvg_enabled"] and pol["fvg"] > 0:
+                        self._buy(sym, self.base_dca_usd * pol["fvg"], price, "tjr_fvg", pol["fvg"], reg)
+                        self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying {pol['fvg']:g}×", sym, price)
+                    else:
+                        self._alert(f"Crypto Bot TJR: Price in Bullish FVG on {sym} — suppressed ({reg})", sym, price)
                 if any(f.get("direction") == "bear" for f in filled):
                     self._alert(f"Crypto Bot TJR: Price in Bearish FVG on {sym} — watching", sym, price)
 
-                # Scheduled interval DCA.
+                # Scheduled interval DCA (regime scales or pauses it).
                 if time.time() >= self._next_interval[sym]:
                     if self._skip_next[sym]:
                         self._skip_next[sym] = False
                         print(f"[DCA] {sym} interval buy skipped (bearish MSS)", flush=True)
+                    elif pol["interval"] <= 0:
+                        print(f"[DCA] {sym} interval buy paused ({reg})", flush=True)
                     else:
-                        self._buy(sym, self.base_dca_usd, price, "dca_interval", 1.0)
+                        self._buy(sym, self.base_dca_usd * pol["interval"], price, "dca_interval", pol["interval"], reg)
                     self._next_interval[sym] = time.time() + self.interval_s
 
             except Exception as exc:
@@ -187,6 +224,8 @@ class CryptoDCABot:
                 "base_dca_usd":    self.base_dca_usd,
                 "interval_hours":  int(self.interval_s / 3600),
                 "source":          crypto_data.source(),
+                "regime":          {s: self._regime.get(s, "UNKNOWN") for s in self.symbols},
+                "regime_filter":   config.CRYPTO_REGIME_FILTER,
             }
 
 

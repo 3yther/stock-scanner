@@ -16,9 +16,10 @@ NEVER writes the live tjr_buys ledger — everything is in-memory.
 
 import threading
 import time
+from bisect import bisect_right as _bisect_right
 from datetime import datetime, timezone, timedelta
 
-from quant import crypto_data, tjr_strategy as T
+from quant import crypto_data, tjr_strategy as T, regime as RG
 
 UTC = timezone.utc
 
@@ -47,14 +48,27 @@ def is_running() -> bool:
         return _state["status"] in ("fetching", "running")
 
 
-def start(start_date: str, end_date: str) -> bool:
+def start(start_date: str, end_date: str, regime_filter: bool = True) -> bool:
     if is_running():
         return False
     _set(status="fetching", progress=0.0, message="Starting…", result=None,
          error=None, started_at=time.time(), finished_at=None)
-    threading.Thread(target=_run, args=(start_date, end_date), daemon=True,
+    threading.Thread(target=_run, args=(start_date, end_date, regime_filter), daemon=True,
                      name="tjr-backtest").start()
     return True
+
+
+def _build_regime_lookup(symbol, sim_start_ts, end_ts):
+    """Causal regime at each completed 1h bar (TRENDING_UP/DOWN/CHOPPY/UNKNOWN),
+    for the backtest's regime filter. Returns (sorted ts list, regime list)."""
+    fetch = int(sim_start_ts - 14 * 86400)        # SMA200 on 1h needs ~9 days of warmup
+    c = crypto_data.get_candles_range(symbol, "1h", fetch, end_ts)
+    need = 200 + 20 + 1
+    tslist, reglist = [], []
+    for j in range(need, len(c) + 1):
+        tslist.append(c[j - 1]["timestamp"])
+        reglist.append(RG.classify(c[:j])["regime"])
+    return tslist, reglist
 
 
 # ── Per-symbol signal detection (causal walk) ─────────────────────────────
@@ -122,7 +136,7 @@ def _new_pf():
             "next_iv": None, "eq": [], "last_day": None}
 
 
-def _buy(pf, sym, usd, price, btype, mult, ts):
+def _buy(pf, sym, usd, price, btype, mult, ts, regime_=None):
     usd = min(usd, pf["cash"])
     if usd < 0.01 or price <= 0:
         return
@@ -130,10 +144,19 @@ def _buy(pf, sym, usd, price, btype, mult, ts):
     pf["cash"] -= usd; pf["qty"][sym] += q; pf["invested"] += usd
     pf["lots"].append({"sym": sym, "price": price, "qty": q})
     pf["buys"].append({"timestamp": T._iso(ts), "symbol": sym, "type": btype,
-                       "usd_amount": round(usd, 2), "price": round(price, 2), "multiplier": mult})
+                       "usd_amount": round(usd, 2), "price": round(price, 2),
+                       "multiplier": mult, "regime": regime_})
 
 
-def _simulate(prices, ev_by_sym, start_ts, end_ts):
+def _reg_at(reg_lookup, sym, ts):
+    if not reg_lookup or sym not in reg_lookup:
+        return "UNKNOWN"
+    tslist, reglist = reg_lookup[sym]
+    i = _bisect_right(tslist, ts) - 1
+    return reglist[i] if i >= 0 else "UNKNOWN"
+
+
+def _simulate(prices, ev_by_sym, start_ts, end_ts, reg_filter=False, reg_lookup=None):
     iv = INTERVAL_HOURS * 3600
     timeline = sorted({ts for s in SYMBOLS for ts in prices[s] if start_ts <= ts <= end_ts})
     if not timeline:
@@ -141,26 +164,39 @@ def _simulate(prices, ev_by_sym, start_ts, end_ts):
     std, tjr = _new_pf(), _new_pf()
     std["next_iv"] = tjr["next_iv"] = timeline[0]
     last = {s: 0.0 for s in SYMBOLS}
+
+    def policy(sym, ts):
+        return RG.sizing_policy(_reg_at(reg_lookup, sym, ts) if reg_filter else "UNKNOWN")
+
     for ts in timeline:
         for s in SYMBOLS:
             if ts in prices[s]:
                 last[s] = prices[s][ts]
-        # TJR-only event reactions
+        # TJR-only event reactions (regime-gated when the filter is on)
         for s in SYMBOLS:
             for et in ev_by_sym[s].get(ts, []):
-                p = prices[s].get(ts, last[s])
-                if et == "mss_bull":       _buy(tjr, s, BASE_DCA_USD * 2.5, p, "tjr_mss", 2.5, ts)
-                elif et == "mss_bear":     tjr["skip"][s] = True
-                elif et == "fvg_fill_bull": _buy(tjr, s, BASE_DCA_USD * 1.5, p, "tjr_fvg", 1.5, ts)
-        # interval DCA for both
-        for pf in (std, tjr):
-            while pf["next_iv"] is not None and ts >= pf["next_iv"]:
-                for s in SYMBOLS:
-                    if pf is tjr and pf["skip"][s]:
-                        pf["skip"][s] = False
-                    else:
-                        _buy(pf, s, BASE_DCA_USD, last[s], "dca_interval", 1.0, pf["next_iv"])
-                pf["next_iv"] += iv
+                p = prices[s].get(ts, last[s]); pol = policy(s, ts); reg = _reg_at(reg_lookup, s, ts) if reg_filter else None
+                if et == "mss_bull" and pol["mss_enabled"] and pol["mss"] > 0:
+                    _buy(tjr, s, BASE_DCA_USD * pol["mss"], p, "tjr_mss", pol["mss"], ts, reg)
+                elif et == "mss_bear":
+                    tjr["skip"][s] = True
+                elif et == "fvg_fill_bull" and pol["fvg_enabled"] and pol["fvg"] > 0:
+                    _buy(tjr, s, BASE_DCA_USD * pol["fvg"], p, "tjr_fvg", pol["fvg"], ts, reg)
+        # standard interval DCA (regime never applies)
+        while std["next_iv"] is not None and ts >= std["next_iv"]:
+            for s in SYMBOLS:
+                _buy(std, s, BASE_DCA_USD, last[s], "dca_interval", 1.0, std["next_iv"])
+            std["next_iv"] += iv
+        # tjr interval DCA (regime scales/pauses; bearish-MSS skip honoured)
+        while tjr["next_iv"] is not None and ts >= tjr["next_iv"]:
+            for s in SYMBOLS:
+                if tjr["skip"][s]:
+                    tjr["skip"][s] = False
+                else:
+                    pol = policy(s, tjr["next_iv"]); reg = _reg_at(reg_lookup, s, tjr["next_iv"]) if reg_filter else None
+                    if pol["interval"] > 0:
+                        _buy(tjr, s, BASE_DCA_USD * pol["interval"], last[s], "dca_interval", pol["interval"], tjr["next_iv"], reg)
+            tjr["next_iv"] += iv
         # daily equity snapshot
         day = T._dt(ts).date().isoformat()
         for pf in (std, tjr):
@@ -211,7 +247,7 @@ def _metrics(pf, last):
     }
 
 
-def _run(start_date, end_date):
+def _run(start_date, end_date, regime_filter=True):
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=UTC)
         end_dt   = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(days=1)
@@ -235,8 +271,15 @@ def _run(start_date, end_date):
             for kk in counts:
                 counts[kk] += cnt[kk]
 
+        reg_lookup = {}
+        if regime_filter:
+            for k, sym in enumerate(SYMBOLS):
+                _set(status="running", progress=0.75 + 0.05 * k / len(SYMBOLS),
+                     message=f"Building {sym} 1h regime timeline…")
+                reg_lookup[sym] = _build_regime_lookup(sym, start_ts, end_ts)
+
         _set(status="running", progress=0.85, message="Simulating standard vs TJR DCA…")
-        sim = _simulate(prices, ev_by_sym, start_ts, end_ts)
+        sim = _simulate(prices, ev_by_sym, start_ts, end_ts, reg_filter=regime_filter, reg_lookup=reg_lookup)
         if sim is None:
             _set(status="error", error="No candles inside the selected range.", finished_at=time.time())
             return
@@ -245,7 +288,8 @@ def _run(start_date, end_date):
             "label":   "TJR BACKTEST — Simulated, read-only (never writes the live ledger)",
             "params":  {"start": start_date, "end": end_date, "symbols": SYMBOLS,
                         "base_dca_usd": BASE_DCA_USD, "interval_hours": INTERVAL_HOURS,
-                        "initial_balance": INITIAL},
+                        "initial_balance": INITIAL, "regime_filter": regime_filter},
+            "regime_filter": regime_filter,
             "signals": counts,
             "standard": _metrics(std, last),
             "tjr":      _metrics(tjr, last),
