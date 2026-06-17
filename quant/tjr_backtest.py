@@ -17,7 +17,8 @@ import time
 from bisect import bisect_right as _bisect_right
 from datetime import datetime, timezone, timedelta
 
-from quant import crypto_data, tjr_strategy as T, regime as RG
+import config
+from quant import crypto_data, tjr_strategy as T, regime as RG, smt_divergence as SMT
 
 UTC = timezone.utc
 INITIAL  = 1000.0
@@ -73,6 +74,7 @@ def _clean_params(p: dict) -> dict:
         "fvg_mult":      num("fvg_mult", 1.5, 1.0, 5.0),
         "base_usd":      num("base_usd", 10.0, 1.0, 1000.0),
         "regime_filter": bool(p.get("regime_filter", True)),
+        "smt_enabled":   bool(p.get("smt_enabled", True)),
         "sweep_param":   p.get("sweep_param") if p.get("sweep_param") in SWEEP_RANGES else "fvg_atr",
     }
 
@@ -166,7 +168,7 @@ def _new_pf(symbols):
             "next_iv": None, "eq": [], "last_day": None}
 
 
-def _buy(pf, sym, usd, price, btype, mult, ts, regime_=None):
+def _buy(pf, sym, usd, price, btype, mult, ts, regime_=None, smt_state="none", smt_mult=1.0):
     usd = min(usd, pf["cash"])
     if usd < 0.01 or price <= 0:
         return
@@ -175,7 +177,8 @@ def _buy(pf, sym, usd, price, btype, mult, ts, regime_=None):
     pf["lots"].append({"sym": sym, "price": price, "qty": q})
     pf["buys"].append({"timestamp": T._iso(ts), "symbol": sym, "type": btype,
                        "usd_amount": round(usd, 2), "price": round(price, 2),
-                       "multiplier": round(mult, 3), "regime": regime_})
+                       "multiplier": round(mult, 3), "regime": regime_,
+                       "smt_state": smt_state, "smt_applied_mult": round(smt_mult, 3)})
 
 
 def _eff(regime, mss_mult, fvg_mult, reg_filter):
@@ -190,9 +193,10 @@ def _eff(regime, mss_mult, fvg_mult, reg_filter):
     return {"mss": mss_mult, "fvg": fvg_mult, "interval": 1.0, "mss_on": True, "fvg_on": True}
 
 
-def _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup):
+def _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup, smt_lookup=None):
     iv = p["interval_hours"] * 3600
     base, mssm, fvgm, rf = p["base_usd"], p["mss_mult"], p["fvg_mult"], p["regime_filter"]
+    smt_on = p.get("smt_enabled", True)
     timeline = sorted({ts for s in symbols for ts in prices[s] if start_ts <= ts <= end_ts})
     if not timeline:
         return None
@@ -203,6 +207,11 @@ def _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup):
     def eff(sym, ts):
         return _eff(_reg_at(reg_lookup, sym, ts) if rf else "UNKNOWN", mssm, fvgm, rf)
 
+    def smt_for(ts):
+        """SMT state + confluence multiplier (for bullish buys) at time `ts`."""
+        state = SMT.smt_at(smt_lookup, ts) if (smt_lookup and smt_on) else "none"
+        return state, SMT.confluence_mult(state, "bull", enabled=smt_on)
+
     for ts in timeline:
         for s in symbols:
             if ts in prices[s]:
@@ -212,11 +221,13 @@ def _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup):
                 pol = eff(s, ts); reg = _reg_at(reg_lookup, s, ts) if rf else None
                 pp = prices[s].get(ts, last[s])
                 if et == "mss_bull" and pol["mss_on"] and pol["mss"] > 0:
-                    _buy(tjr, s, base * pol["mss"], pp, "tjr_mss", pol["mss"], ts, reg)
+                    smt_state, sm = smt_for(ts)
+                    _buy(tjr, s, base * pol["mss"] * sm, pp, "tjr_mss", pol["mss"], ts, reg, smt_state, sm)
                 elif et == "mss_bear":
                     tjr["skip"][s] = True
                 elif et == "fvg_fill_bull" and pol["fvg_on"] and pol["fvg"] > 0:
-                    _buy(tjr, s, base * pol["fvg"], pp, "tjr_fvg", pol["fvg"], ts, reg)
+                    smt_state, sm = smt_for(ts)
+                    _buy(tjr, s, base * pol["fvg"] * sm, pp, "tjr_fvg", pol["fvg"], ts, reg, smt_state, sm)
         while std["next_iv"] is not None and ts >= std["next_iv"]:
             for s in symbols:
                 _buy(std, s, base, last[s], "dca_interval", 1.0, std["next_iv"])
@@ -273,7 +284,7 @@ def _metrics(pf, last, symbols):
     }
 
 
-def _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p):
+def _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p, smt_lookup=None):
     prices, ev_by_sym, counts = {}, {}, {"mss_bull": 0, "mss_bear": 0, "fvg_fill": 0}
     for s in symbols:
         ev, cnt = _detect_events(candles_by_sym[s], start_ts, end_ts, p["fvg_atr"])
@@ -281,7 +292,7 @@ def _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p):
         prices[s] = {c["timestamp"]: c["close"] for c in candles_by_sym[s]}
         for k in counts:
             counts[k] += cnt[k]
-    sim = _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup)
+    sim = _simulate(prices, ev_by_sym, start_ts, end_ts, symbols, p, reg_lookup, smt_lookup)
     if sim is None:
         return None
     std, tjr, last = sim
@@ -314,6 +325,14 @@ def _run(p):
                 _set(status="running", progress=0.32 + 0.12 * k / len(symbols), message=f"Building {sym} 1h regime…")
                 reg_lookup[sym] = _build_regime_lookup(sym, start_ts, end_ts)
 
+        # SMT divergence needs the BTC/ETH pair in lockstep — build a causal
+        # state timeline once (no-lookahead) and reuse across all windows.
+        smt_lookup = None
+        if p["smt_enabled"] and "BTC" in candles_by_sym and "ETH" in candles_by_sym:
+            _set(status="running", progress=0.46, message="Building BTC/ETH SMT timeline…")
+            smt_lookup = SMT.build_smt_timeline(candles_by_sym["BTC"], candles_by_sym["ETH"],
+                                                config.SMT_SWING_BARS)
+
         if p["mode"] == "sweep":
             sp = p["sweep_param"]; values = SWEEP_RANGES[sp]
             rows = []
@@ -321,7 +340,7 @@ def _run(p):
                 _set(status="running", progress=0.5 + 0.48 * i / len(values),
                      message=f"Sweep {sp}={v} ({i+1}/{len(values)})…")
                 pv = {**p, sp: v}
-                w = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, pv)
+                w = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, pv, smt_lookup)
                 if not w:
                     continue
                 m = w["tjr"]
@@ -339,7 +358,7 @@ def _run(p):
 
         # single
         _set(status="running", progress=0.55, message="Simulating standard vs TJR DCA…")
-        full = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p)
+        full = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, end_ts, p, smt_lookup)
         if not full:
             _set(status="error", error="No candles inside the selected range.", finished_at=time.time())
             return
@@ -352,8 +371,8 @@ def _run(p):
             split_ts = int(split_dt.timestamp())
             if start_ts < split_ts < end_ts:
                 _set(status="running", progress=0.8, message="Train / validation split…")
-                tr = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, split_ts, p)
-                va = _backtest_window(candles_by_sym, reg_lookup, symbols, split_ts, end_ts, p)
+                tr = _backtest_window(candles_by_sym, reg_lookup, symbols, start_ts, split_ts, p, smt_lookup)
+                va = _backtest_window(candles_by_sym, reg_lookup, symbols, split_ts, end_ts, p, smt_lookup)
                 result["split_date"] = p["split_date"][:10]
                 result["train"] = tr
                 result["validation"] = va

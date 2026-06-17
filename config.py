@@ -68,6 +68,14 @@ CRYPTO_REGIME_FILTER   = True    # regime-aware TJR sizing (default ON)
 CRYPTO_REGIME_INTERVAL = "1h"    # timeframe the regime is computed on
 CRYPTO_REGIME_REFRESH  = 600     # seconds between regime re-checks (1h regime is slow)
 
+# ── SMT divergence (BTC vs ETH) — toggleable confluence sizing ───────────────
+# Additive sizing only — SMT never gates a buy, it scales it. When an FVG/MSS
+# buy agrees with the SMT bias it's boosted; when it disagrees it's reduced.
+SMT_ENABLED         = True   # compute SMT + apply confluence sizing
+SMT_CONFLUENCE_MULT = 1.3    # × when SMT agrees with the buy direction
+SMT_DISAGREE_MULT   = 0.7    # × when SMT disagrees (reduce, don't block)
+SMT_SWING_BARS      = 1      # swing-pivot bars (reuse the MSS swing definition)
+
 # Scan cadence depends on market state (chosen per-scan in scanner.run_loop).
 SCAN_INTERVAL_OPEN   = 300    # market OPEN   → scan every 5 minutes
 SCAN_INTERVAL_CLOSED = 1800   # market CLOSED → scan every 30 minutes

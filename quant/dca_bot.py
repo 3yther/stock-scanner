@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timezone
 
 import config
-from quant import crypto_data, crypto_db, tjr_strategy, regime, alerts
+from quant import crypto_data, crypto_db, tjr_strategy, regime, alerts, smt_divergence
 
 UTC = timezone.utc
 
@@ -52,6 +52,7 @@ class CryptoDCABot:
         self._next_interval = {s: 0.0 for s in self.symbols}
         self._regime      = {s: "UNKNOWN" for s in self.symbols}   # current regime per symbol
         self._regime_data = {s: {} for s in self.symbols}
+        self._smt         = dict(smt_divergence.NEUTRAL)           # current BTC/ETH SMT state
         self._prev_regime = {s: None for s in self.symbols}        # for regime-change alerts
         self._regime_ts   = 0.0
         self._peak_equity = initial_balance
@@ -87,7 +88,8 @@ class CryptoDCABot:
 
     # ── Buying ────────────────────────────────────────────────────────────
 
-    def _buy(self, symbol, usd, price, type_, multiplier, regime_=None):
+    def _buy(self, symbol, usd, price, type_, multiplier, regime_=None,
+             smt_state="none", smt_mult=1.0):
         if price <= 0:
             return
         usd = min(usd, self.balance)
@@ -100,9 +102,11 @@ class CryptoDCABot:
             self.balance -= usd
             self.holdings[symbol] += qty
         ts = datetime.now(UTC).isoformat()
-        crypto_db.log_buy(symbol, ts, type_, round(usd, 2), round(price, 2), multiplier, reg)
+        crypto_db.log_buy(symbol, ts, type_, round(usd, 2), round(price, 2), multiplier, reg,
+                          smt_state, round(smt_mult, 3))
+        smt_note = f" · SMT {smt_state} ×{smt_mult:g}" if smt_mult != 1.0 else ""
         print(f"[DCA] BUY {symbol} ${usd:,.2f} @ ${price:,.2f} "
-              f"({type_} ×{multiplier} · {reg}) | bal ${self.balance:,.2f} | {symbol} {self.holdings[symbol]:.6f}",
+              f"({type_} ×{multiplier} · {reg}{smt_note}) | bal ${self.balance:,.2f} | {symbol} {self.holdings[symbol]:.6f}",
               flush=True)
 
     # ── Regime (re-checked slowly; 1h regime barely moves) ────────────────
@@ -135,13 +139,32 @@ class CryptoDCABot:
     def _cycle(self):
         now = datetime.now(UTC)
         self._refresh_regime()
+
+        # Pull candles for all symbols up front — SMT needs BTC & ETH together.
+        candles_by = {}
         for sym in self.symbols:
             try:
-                candles = crypto_data.get_candles(sym, "5m", CANDLE_LIMIT)
+                cs = crypto_data.get_candles(sym, "5m", CANDLE_LIMIT)
+                if cs:
+                    candles_by[sym] = cs
+                    self.prices[sym] = float(cs[-1]["close"])
+            except Exception as exc:
+                print(f"[DCA] {sym} candle fetch error: {exc}", flush=True)
+
+        # SMT divergence (BTC vs ETH) — one market-wide bias, persisted per cycle.
+        if config.SMT_ENABLED and "BTC" in candles_by and "ETH" in candles_by:
+            try:
+                self._smt = smt_divergence.update(candles_by["BTC"], candles_by["ETH"], now=now)
+            except Exception as exc:
+                print(f"[DCA] SMT error: {exc}", flush=True)
+        smt_state = self._smt.get("type", "none") if config.SMT_ENABLED else "none"
+
+        for sym in self.symbols:
+            try:
+                candles = candles_by.get(sym)
                 if not candles:
                     continue
-                price = float(candles[-1]["close"])
-                self.prices[sym] = price
+                price = self.prices[sym]
 
                 res = tjr_strategy.process(sym, candles, live_price=price, now=now)
 
@@ -156,8 +179,9 @@ class CryptoDCABot:
                     sig_px = float(res["mss"]["price"])
                     if mdir == "bull":
                         if pol["mss_enabled"] and pol["mss"] > 0:
-                            usd = self.base_dca_usd * pol["mss"]
-                            self._buy(sym, usd, price, "tjr_mss", pol["mss"], reg)
+                            smt_m = smt_divergence.confluence_mult(smt_state, "bull")
+                            usd = self.base_dca_usd * pol["mss"] * smt_m
+                            self._buy(sym, usd, price, "tjr_mss", pol["mss"], reg, smt_state, smt_m)
                             alerts.dispatch("mss_bull", f"Crypto Bot TJR: Bullish MSS on {sym} — buying {pol['mss']:g}×",
                                             symbol=sym, signal="MSS", direction="Bullish", price=sig_px, regime=reg, buy_amount=usd)
                         else:
@@ -173,8 +197,9 @@ class CryptoDCABot:
                 filled = res.get("filled_fvgs", [])
                 if any(f.get("direction") == "bull" for f in filled):
                     if pol["fvg_enabled"] and pol["fvg"] > 0:
-                        usd = self.base_dca_usd * pol["fvg"]
-                        self._buy(sym, usd, price, "tjr_fvg", pol["fvg"], reg)
+                        smt_m = smt_divergence.confluence_mult(smt_state, "bull")
+                        usd = self.base_dca_usd * pol["fvg"] * smt_m
+                        self._buy(sym, usd, price, "tjr_fvg", pol["fvg"], reg, smt_state, smt_m)
                         alerts.dispatch("fvg", f"Crypto Bot TJR: Price in Bullish FVG on {sym} — buying {pol['fvg']:g}×",
                                         symbol=sym, signal="FVG", direction="Bullish", price=price, regime=reg, buy_amount=usd)
                     else:
@@ -188,7 +213,7 @@ class CryptoDCABot:
                     elif pol["interval"] <= 0:
                         print(f"[DCA] {sym} interval buy paused ({reg})", flush=True)
                     else:
-                        self._buy(sym, self.base_dca_usd * pol["interval"], price, "dca_interval", pol["interval"], reg)
+                        self._buy(sym, self.base_dca_usd * pol["interval"], price, "dca_interval", pol["interval"], reg, smt_state, 1.0)
                     self._next_interval[sym] = time.time() + self.interval_s
 
             except Exception as exc:
@@ -247,6 +272,10 @@ class CryptoDCABot:
                 "source":          crypto_data.source(),
                 "regime":          {s: self._regime.get(s, "UNKNOWN") for s in self.symbols},
                 "regime_filter":   config.CRYPTO_REGIME_FILTER,
+                "smt":             {"type": self._smt.get("type", "none"),
+                                    "btc_swing": self._smt.get("btc_swing"),
+                                    "eth_swing": self._smt.get("eth_swing"),
+                                    "enabled": config.SMT_ENABLED},
             }
 
 

@@ -454,6 +454,8 @@ th { background:rgba(8,6,24,.95); color:var(--muted); }
         <div class="bt-field"><label>FVG mult · <span id="bt-fvgm-v">1.5</span>×</label><input type="range" id="bt-fvgm" min="1.0" max="2.5" step="0.1" value="1.5"></div>
         <div class="bt-field"><label>Regime filter</label>
           <select id="bt-regime"><option value="1">ON</option><option value="0">OFF</option></select></div>
+        <div class="bt-field"><label>SMT divergence</label>
+          <select id="bt-smt"><option value="1">ON</option><option value="0">OFF</option></select></div>
         <div class="bt-field" id="bt-sweepwrap" style="display:none"><label>Sweep param</label>
           <select id="bt-sweep"><option value="fvg_atr">FVG ATR</option><option value="interval_hours">DCA interval</option><option value="mss_mult">MSS mult</option><option value="fvg_mult">FVG mult</option><option value="base_usd">Base USD</option></select></div>
         <div class="bt-field"><label>Start</label><input type="date" id="bt-start"></div>
@@ -583,6 +585,10 @@ async function refreshStatus(){
     FVGS = fvgs || [];
     $('session-pill').textContent = st.in_session ? 'SESSION ACTIVE' : 'SESSION CLOSED';
     $('session-pill').style.color = st.in_session ? 'var(--green)' : 'var(--muted)';
+    // SMT divergence (BTC vs ETH) — one bias for the pair, shown on each block.
+    const smt = st.smt || {type:'none'};
+    const smtCls = smt.type==='bullish'?'b-bull':smt.type==='bearish'?'b-bear':'b-none';
+    const smtLbl = smt.type==='bullish'?'▲ BULLISH':smt.type==='bearish'?'▼ BEARISH':'— NEUTRAL';
     const byFvg = { BTC:[], ETH:[] };
     (fvgs||[]).filter(f => !f.filled).forEach(f => { if (byFvg[f.symbol]) byFvg[f.symbol].push(f); });
 
@@ -607,6 +613,7 @@ async function refreshStatus(){
         <div class="row"><span class="k">ASIA RANGE (H/L)</span><span class="v">${s.asia_high!=null?money(s.asia_high):'—'} / ${s.asia_low!=null?money(s.asia_low):'—'}</span></div>
         <div class="row"><span class="k">SWEEP STATUS</span><span class="badge ${sweepCls}">${(s.sweep_status||'no sweep yet').toUpperCase()}</span></div>
         <div class="row"><span class="k">LATEST MSS</span><span class="v">${mssHtml}</span></div>
+        <div class="row"><span class="k">SMT (BTC/ETH)</span><span class="badge ${smtCls}">${smt.enabled===false?'OFF':smtLbl}</span></div>
         <div class="row"><span class="k">ACTIVE FVGs</span><span class="v">${s.active_fvg_count||0}</span></div>
         <div class="fvg-list">${fvgHtml}</div>
       </div>`;
@@ -787,6 +794,7 @@ function btParams(){
     fvg_atr: parseFloat($('bt-fvgatr').value), mss_mult: parseFloat($('bt-mssm').value),
     fvg_mult: parseFloat($('bt-fvgm').value), base_usd: parseFloat($('bt-base').value)||10,
     regime_filter: $('bt-regime').value==='1',
+    smt_enabled: $('bt-smt').value==='1',
     sweep_param: $('bt-sweep').value,
   };
 }
@@ -826,7 +834,7 @@ function renderBT(){
   if (r.mode === 'sweep'){ renderSweep(r); return; }
   $('bt-sweep-res').style.display='none'; $('bt-single').style.display='block';
   const m = r.tjr, sg = r.signals, p = r.params;
-  $('bt-signals').innerHTML = `${p.symbols.join('+')} · ${p.start} → ${p.end} · int ${p.interval_hours}h · FVG ${(+p.fvg_atr).toFixed(2)}×ATR · MSS ${p.mss_mult}× · FVG ${p.fvg_mult}× · regime <b style="color:${p.regime_filter?'var(--green)':'var(--muted)'}">${p.regime_filter?'ON':'OFF'}</b> &nbsp;|&nbsp; signals: <b>${sg.mss_bull}</b>▲MSS <b>${sg.mss_bear}</b>▼MSS <b>${sg.fvg_fill}</b> FVG`;
+  $('bt-signals').innerHTML = `${p.symbols.join('+')} · ${p.start} → ${p.end} · int ${p.interval_hours}h · FVG ${(+p.fvg_atr).toFixed(2)}×ATR · MSS ${p.mss_mult}× · FVG ${p.fvg_mult}× · regime <b style="color:${p.regime_filter?'var(--green)':'var(--muted)'}">${p.regime_filter?'ON':'OFF'}</b> · SMT <b style="color:${p.smt_enabled?'var(--green)':'var(--muted)'}">${p.smt_enabled?'ON':'OFF'}</b> &nbsp;|&nbsp; signals: <b>${sg.mss_bull}</b>▲MSS <b>${sg.mss_bear}</b>▼MSS <b>${sg.fvg_fill}</b> FVG`;
   $('bt-compare').innerHTML = compareHTML(r.standard, r.tjr, 'STANDARD DCA', 'TJR-ENHANCED DCA');
   $('bt-ret').textContent = pct(m.total_return_pct); $('bt-ret').className='v '+(m.total_return_pct>=0?'up':'down');
   $('bt-dd').textContent = m.max_drawdown_pct.toFixed(2)+'%';

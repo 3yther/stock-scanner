@@ -147,6 +147,12 @@ def api_tjr_status():
            "symbols": {}}
     from quant import regime
     out["regime_filter"] = config.CRYPTO_REGIME_FILTER
+    # SMT divergence (BTC vs ETH) — latest persisted state, one bias for the pair.
+    smt = crypto_db.get_latest_smt()
+    out["smt"] = {"type": (smt["type"] if smt else "none"),
+                  "btc_swing": (smt.get("btc_swing") if smt else None),
+                  "eth_swing": (smt.get("eth_swing") if smt else None),
+                  "enabled": config.SMT_ENABLED}
     for sym in tjr_strategy.SYMBOLS:
         asia   = crypto_db.get_asia_range(sym, td)
         swept  = {s["direction"] for s in crypto_db.get_sweeps_on(sym, td)}

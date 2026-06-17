@@ -11,7 +11,8 @@ Tables:
   tjr_sweeps     : id, timestamp, symbol, direction(high/low), sweep_price, asia_level, created_at
   tjr_mss        : id, timestamp, symbol, direction(bull/bear), price, swing_level, created_at
   tjr_fvg        : id, timestamp, symbol, direction(bull/bear), top_price, bottom_price, filled, filled_at, created_at
-  tjr_buys       : id, timestamp, symbol, type, usd_amount, price, multiplier, created_at
+  tjr_buys       : id, timestamp, symbol, type, usd_amount, price, multiplier, regime, smt_state, smt_applied_mult, created_at
+  tjr_smt        : id, timestamp, type(bullish/bearish/none), btc_swing, eth_swing, created_at
 """
 
 import sqlite3
@@ -87,7 +88,12 @@ _DDL_PG = [
          id SERIAL PRIMARY KEY, timestamp TEXT NOT NULL, symbol TEXT NOT NULL,
          type TEXT NOT NULL, usd_amount DOUBLE PRECISION NOT NULL,
          price DOUBLE PRECISION NOT NULL, multiplier DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-         regime TEXT, created_at TIMESTAMP DEFAULT now())""",
+         regime TEXT, smt_state TEXT, smt_applied_mult DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+         created_at TIMESTAMP DEFAULT now())""",
+    """CREATE TABLE IF NOT EXISTS tjr_smt (
+         id SERIAL PRIMARY KEY, timestamp TEXT NOT NULL, type TEXT NOT NULL,
+         btc_swing DOUBLE PRECISION, eth_swing DOUBLE PRECISION,
+         created_at TIMESTAMP DEFAULT now())""",
     """CREATE TABLE IF NOT EXISTS tjr_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
 ]
 
@@ -112,7 +118,11 @@ _DDL_SQLITE = [
     """CREATE TABLE IF NOT EXISTS tjr_buys (
          id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, symbol TEXT NOT NULL,
          type TEXT NOT NULL, usd_amount REAL NOT NULL, price REAL NOT NULL,
-         multiplier REAL NOT NULL DEFAULT 1.0, regime TEXT, created_at TEXT DEFAULT (datetime('now')))""",
+         multiplier REAL NOT NULL DEFAULT 1.0, regime TEXT, smt_state TEXT,
+         smt_applied_mult REAL NOT NULL DEFAULT 1.0, created_at TEXT DEFAULT (datetime('now')))""",
+    """CREATE TABLE IF NOT EXISTS tjr_smt (
+         id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, type TEXT NOT NULL,
+         btc_swing REAL, eth_swing REAL, created_at TEXT DEFAULT (datetime('now')))""",
     """CREATE TABLE IF NOT EXISTS tjr_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
 ]
 
@@ -125,6 +135,8 @@ def init_tjr_db():
             for ddl in _DDL_PG:
                 cur.execute(ddl)
             cur.execute("ALTER TABLE tjr_buys ADD COLUMN IF NOT EXISTS regime TEXT")  # migrate existing
+            cur.execute("ALTER TABLE tjr_buys ADD COLUMN IF NOT EXISTS smt_state TEXT")
+            cur.execute("ALTER TABLE tjr_buys ADD COLUMN IF NOT EXISTS smt_applied_mult DOUBLE PRECISION NOT NULL DEFAULT 1.0")
             cur.close()
         else:
             for ddl in _DDL_SQLITE:
@@ -132,6 +144,10 @@ def init_tjr_db():
             cols = [r[1] for r in conn.execute("PRAGMA table_info(tjr_buys)")]
             if "regime" not in cols:                                                  # migrate existing
                 conn.execute("ALTER TABLE tjr_buys ADD COLUMN regime TEXT")
+            if "smt_state" not in cols:
+                conn.execute("ALTER TABLE tjr_buys ADD COLUMN smt_state TEXT")
+            if "smt_applied_mult" not in cols:
+                conn.execute("ALTER TABLE tjr_buys ADD COLUMN smt_applied_mult REAL NOT NULL DEFAULT 1.0")
     print(f"[TJR DB] tables ready on {_db.db_location()}", flush=True)
 
 
@@ -177,6 +193,19 @@ def get_latest_mss(symbol: str) -> dict | None:
     return rows[0] if rows else None
 
 
+# ── SMT divergence (BTC vs ETH) ───────────────────────────────────────────
+
+def log_smt(timestamp, type_, btc_swing, eth_swing):
+    return _insert("""INSERT INTO tjr_smt (timestamp, type, btc_swing, eth_swing)
+                      VALUES (?, ?, ?, ?)""",
+                   (timestamp, type_, btc_swing, eth_swing))
+
+
+def get_latest_smt() -> dict | None:
+    rows = _query("SELECT * FROM tjr_smt ORDER BY id DESC LIMIT 1")
+    return rows[0] if rows else None
+
+
 def log_fvg(symbol, timestamp, direction, top_price, bottom_price):
     return _insert("""INSERT INTO tjr_fvg (timestamp, symbol, direction, top_price, bottom_price, filled)
                       VALUES (?, ?, ?, ?, ?, ?)""",
@@ -201,10 +230,12 @@ def get_recent_fvgs(symbol: str, limit: int = 40) -> list[dict]:
                   (symbol, limit))
 
 
-def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0, regime=None):
-    return _insert("""INSERT INTO tjr_buys (timestamp, symbol, type, usd_amount, price, multiplier, regime)
-                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                   (timestamp, symbol, type_, usd_amount, price, multiplier, regime))
+def log_buy(symbol, timestamp, type_, usd_amount, price, multiplier=1.0, regime=None,
+            smt_state="none", smt_applied_mult=1.0):
+    return _insert("""INSERT INTO tjr_buys (timestamp, symbol, type, usd_amount, price, multiplier, regime, smt_state, smt_applied_mult)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (timestamp, symbol, type_, usd_amount, price, multiplier, regime,
+                    smt_state, smt_applied_mult))
 
 
 def get_recent_buys(limit: int = 50) -> list[dict]:
