@@ -23,13 +23,16 @@
       transform-origin: center center;
     }
     .vid.show { opacity: 1; }
+    /* All videos except sunrise are greyscale */
+    #v-forest { filter: grayscale(1); }
+
     @keyframes kenburns {
       from { transform: scale(1.0) translate(0%,0%); }
       to   { transform: scale(1.13) translate(-1.5%,-1%); }
     }
     .ken-burns { animation: kenburns 14s linear forwards; }
 
-    /* Sunrise-specific Ken Burns + grade */
+    /* Sunrise-specific Ken Burns + colour grade */
     @keyframes kenburns-sunrise {
       from { transform: scale(1.0) translate(0%,0%); }
       to   { transform: scale(1.08) translate(-0.4%,-0.3%); }
@@ -85,6 +88,12 @@
       background: radial-gradient(ellipse at 50% 50%, transparent 38%, rgba(0,0,0,0.55) 75%, rgba(0,0,0,0.88) 100%);
       z-index: 5; pointer-events: none;
     }
+    /* Solid black veil for ending — sits just below text layer */
+    #black-veil {
+      position: fixed; inset: 0; background: #000;
+      z-index: 14; pointer-events: none;
+      opacity: 0; transition: opacity 2s ease;
+    }
     /* Instant white flash (no transition — must flicker at 80 ms) */
     #flash-overlay {
       position: fixed; inset: 0; background: #fff;
@@ -102,43 +111,48 @@
       animation: blink-cursor 0.55s step-end infinite;
     }
 
-    /* ── Freeze text (phase 4) — typewriter, always white ── */
+    /* ── Freeze text (phase 4) — key-phrase size, typewriter, always white ── */
     #freeze-text {
       position: fixed; inset: 0;
       display: flex; align-items: center; justify-content: center;
       z-index: 15; pointer-events: none;
-      font-size: clamp(1rem, 2.8vw, 1.95rem); font-weight: 300; letter-spacing: 0.07em;
+      font-size: clamp(2rem, 5vw, 4.5rem); font-weight: 300; letter-spacing: 0.07em;
       color: rgba(255,255,255,0.96); text-align: center; padding: 3rem;
       text-shadow: 0 2px 30px rgba(0,0,0,0.9);
       opacity: 0;
     }
 
-    /* ── Reveal stage (phase 7) ── */
+    /* ── Reveal stage (phase 7) — on black ── */
     #reveal-stage {
       position: fixed; inset: 0; z-index: 15; pointer-events: none;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: clamp(0.5rem, 1.4vh, 0.95rem); opacity: 0;
+      gap: clamp(0.6rem, 1.6vh, 1.1rem); opacity: 0;
     }
     #coming-line1, #coming-line2 {
-      font-size: clamp(0.78rem, 1.7vw, 1.05rem); font-weight: 300; letter-spacing: 0.22em;
-      color: rgba(255,255,255,0.92); text-shadow: 0 2px 20px rgba(0,0,0,0.4);
+      font-size: clamp(1.5rem, 4vw, 3.5rem); font-weight: 300; letter-spacing: 0.18em;
+      color: rgba(204,204,204,0.92); text-shadow: 0 2px 20px rgba(0,0,0,0.4);
       min-height: 1.5em; text-align: center;
     }
     #logo-text {
-      font-size: clamp(3.2rem, 9.5vw, 8rem); font-weight: 700; letter-spacing: 0.13em;
-      color: rgba(8,18,50,0); text-shadow: 0 4px 50px rgba(0,0,0,0.2);
+      font-size: clamp(4rem, 10vw, 9rem); font-weight: 700; letter-spacing: 0.13em;
+      color: rgba(255,255,255,0);
+      text-shadow: none;
       transform: scale(0.95);
-      transition: color 2.5s ease 0.45s, transform 1.5s ease 0.45s;
+      transition: color 2.5s ease 0.45s, transform 1.5s ease 0.45s, text-shadow 2.5s ease 0.45s;
     }
-    #logo-text.in { color: rgba(8,18,50,0.88); transform: scale(1.0); }
+    #logo-text.in {
+      color: #ffffff;
+      text-shadow: 0 0 40px rgba(100,150,255,0.6), 0 0 80px rgba(100,150,255,0.3);
+      transform: scale(1.0);
+    }
     #tagline-text {
-      font-size: clamp(0.54rem, 1.25vw, 0.78rem); font-weight: 400; letter-spacing: 0.46em;
-      text-transform: uppercase; color: rgba(107,92,231,0);
+      font-size: clamp(1rem, 3vw, 2.5rem); font-weight: 300; letter-spacing: 0.28em;
+      color: rgba(204,204,204,0);
       transition: color 2.2s ease 1.3s;
     }
-    #tagline-text.in { color: rgba(107,92,231,0.94); }
+    #tagline-text.in { color: rgba(204,204,204,0.85); }
     #credit-text {
-      font-size: clamp(0.42rem, 0.85vw, 0.58rem); font-weight: 200; letter-spacing: 0.28em;
+      font-size: clamp(0.8rem, 2vw, 1.5rem); font-weight: 200; letter-spacing: 0.28em;
       color: rgba(255,255,255,0); margin-top: 0.2rem;
       transition: color 2.5s ease 2.2s;
     }
@@ -208,7 +222,7 @@
 <!-- Papers canvas -->
 <canvas id="papers-cv"></canvas>
 
-<!-- Overlays (z-order: dark 3 → warm/rays 4 → vignette 5 → glitch 6 → red-tint 7 → grain 9) -->
+<!-- Overlays (z-order: dark 3 → warm/rays 4 → vignette 5 → glitch 6 → red-tint 7 → grain 9 → black-veil 14) -->
 <div id="dark-overlay"></div>
 <div id="warm-overlay"></div>
 <canvas id="rays-cv"></canvas>
@@ -216,15 +230,16 @@
 <canvas id="glitch-cv"></canvas>
 <div id="red-tint"></div>
 <canvas id="grain-cv" width="256" height="256"></canvas>
+<div id="black-veil"></div>
 <div id="flash-overlay"></div>
 
-<!-- Text layers -->
+<!-- Text layers (z-index 15, above black-veil) -->
 <p id="freeze-text"></p>
 <div id="reveal-stage">
   <p id="coming-line1"></p>
   <p id="coming-line2"></p>
   <div id="logo-text">T-SKiLL</div>
-  <p id="tagline-text">coming soon</p>
+  <p id="tagline-text">Your T-level learning platform</p>
   <p id="credit-text">made by amir</p>
 </div>
 
@@ -260,6 +275,7 @@
   var darkOvl      = document.getElementById('dark-overlay');
   var warmOvl      = document.getElementById('warm-overlay');
   var redTintEl    = document.getElementById('red-tint');
+  var blackVeil    = document.getElementById('black-veil');
   var flashEl      = document.getElementById('flash-overlay');
   var freezeEl     = document.getElementById('freeze-text');
   var revealEl     = document.getElementById('reveal-stage');
@@ -322,8 +338,6 @@
   }
 
   // ── Typewriter ────────────────────────────────────────────────────────────
-  // Types `text` into `el` at `msPer` ms/char. Blinks cursor for 1 s after
-  // finish, removes it, then calls `onDone`.
   function typewriter(el, text, msPer, onDone) {
     while (el.firstChild) el.removeChild(el.firstChild);
     var cursor = document.createElement('span');
@@ -356,7 +370,7 @@
     for (var i = 0; i < d.length; i += 4) {
       if (Math.random() < 0.14) {
         d[i] = d[i+1] = d[i+2] = 255;
-        d[i+3] = Math.floor(Math.random() * 28);  // max opacity ~0.11
+        d[i+3] = Math.floor(Math.random() * 28);
       }
     }
     grainCX.putImageData(imgData, 0, 0);
@@ -382,13 +396,12 @@
     var cy  = 0;
     var len = Math.sqrt(W * W + H * H) * 1.1;
 
-    // 4 beams, slowly rotating at different rates
     var baseAngles = [-0.38, -0.12, 0.14, 0.40];
     var rates      = [ 0.014,  0.011, 0.018, 0.013];
 
     for (var b = 0; b < 4; b++) {
       var angle = baseAngles[b] + t * rates[b];
-      var hw    = len * Math.tan(0.055);   // half-width of beam
+      var hw    = len * Math.tan(0.055);
 
       raysCX.save();
       raysCX.translate(cx, cy);
@@ -481,7 +494,7 @@
   // ── Papers animation ───────────────────────────────────────────────────────
   var papers      = [];
   var papersRaf   = null;
-  var papersMode  = 'idle';  // 'idle' | 'forward' | 'glitch' | 'freeze' | 'rewind'
+  var papersMode  = 'idle';
   var papersTs    = 0;
   var glitchTs    = 0;
   var glitchReady = false;
@@ -513,7 +526,6 @@
     papers.sort(function (a, b) { return a.arriveAt - b.arriveAt; });
   }
 
-  // `smear` adds a 2 px horizontal ghost during rewind
   function drawOnePaper(ctx, p, t, smear) {
     if (t <= 0) return;
     var ease  = eOut3(Math.min(t, 1));
@@ -543,7 +555,6 @@
     }
     ctx.restore();
 
-    // Horizontal ghost trail during rewind
     if (smear && alpha > 0.25) {
       ctx.save();
       ctx.globalAlpha = alpha * 0.18;
@@ -671,11 +682,12 @@
     raysCV.style.opacity = '0';
 
     // Reset overlays
-    darkOvl.style.transition  = 'none'; darkOvl.style.opacity  = '0';
-    warmOvl.style.transition  = 'none'; warmOvl.style.opacity  = '0';
+    darkOvl.style.transition   = 'none'; darkOvl.style.opacity   = '0';
+    warmOvl.style.transition   = 'none'; warmOvl.style.opacity   = '0';
     redTintEl.style.transition = 'none'; redTintEl.style.opacity = '0';
-    flashEl.style.opacity = '0';
-    grainCV.style.opacity = '0';
+    blackVeil.style.transition = 'none'; blackVeil.style.opacity = '0';
+    flashEl.style.opacity  = '0';
+    grainCV.style.opacity  = '0';
 
     // Reset text
     freezeEl.style.opacity = '0';
@@ -686,12 +698,25 @@
     [logoEl, taglineEl, creditEl].forEach(function (el) { el.classList.remove('in'); });
     replayBtn.classList.remove('show');
 
-    // ── PHASE 1 — Forest (0–5 s) ─────────────────────────────────────────────
+    // ── PHASE 1 — Forest (0–4 s) ─────────────────────────────────────────────
     after(80, function () {
       vForest.currentTime = 0;
       safePlay(vForest);
       showVid(vForest, 900);
       after(300, function () { vForest.classList.add('ken-burns'); });
+    });
+
+    // ── Vinyl-skip stutter at forest→papers transition (3.7–4.6 s) ───────────
+    // Jumps back 0.3 s and replays the same clip 3× — feels like a record skip
+    after(3700, function () {
+      var t0 = Math.max(0, vForest.currentTime - 0.3);
+      vForest.currentTime = t0; safePlay(vForest);
+      after(300, function () {
+        vForest.currentTime = t0; safePlay(vForest);
+        after(300, function () {
+          vForest.currentTime = t0; safePlay(vForest);
+        });
+      });
     });
 
     // ── PHASE 2 — Papers piling up (4–10 s) ──────────────────────────────────
@@ -723,13 +748,11 @@
       darkOvl.style.transition = 'opacity 0.8s ease';
       darkOvl.style.opacity    = '0.2';
 
-      // Red tint + film grain
       redTintEl.style.transition = 'opacity 1.2s ease';
       redTintEl.style.opacity    = '1';
       grainCV.style.opacity      = '1';
       startGrain();
 
-      // Typewriter: 50 chars × 60 ms = 3 s, fits exactly in the 3 s freeze window
       freezeEl.style.opacity = '1';
       typewriter(freezeEl, 'This is what T Level students deal with every day.', 60, null);
     });
@@ -744,14 +767,13 @@
 
     // ── PHASE 5 — Rewind (15–17 s) ───────────────────────────────────────────
     after(15000, function () {
-      darkOvl.style.transition  = 'opacity 0.4s ease';
-      darkOvl.style.opacity     = '0';
+      darkOvl.style.transition   = 'opacity 0.4s ease';
+      darkOvl.style.opacity      = '0';
       redTintEl.style.transition = 'opacity 0.6s ease';
-      redTintEl.style.opacity   = '0';
-      grainCV.style.opacity     = '0';
+      redTintEl.style.opacity    = '0';
+      grainCV.style.opacity      = '0';
       after(600, stopGrain);
 
-      // Clear freeze text cleanly
       freezeEl.style.opacity = '0';
       after(300, function () {
         while (freezeEl.firstChild) freezeEl.removeChild(freezeEl.firstChild);
@@ -768,7 +790,6 @@
       papersCV.style.opacity    = '0';
       after(600, function () { papersCV.style.display = 'none'; });
 
-      // White flash
       flashEl.style.opacity = '1';
       after(220, function () { flashEl.style.opacity = '0'; });
 
@@ -788,24 +809,33 @@
           after(600, function () {
             warmOvl.style.transition = 'opacity 3.5s ease';
             warmOvl.style.opacity    = '1';
-            // Light rays fade in alongside warm overlay
-            raysCV.style.opacity = '1';
+            raysCV.style.opacity     = '1';
             startRays();
           });
         });
       });
     });
 
-    // ── PHASE 7 — Reveal (22–28 s) ───────────────────────────────────────────
+    // ── Fade to black for ending (20–22 s) ────────────────────────────────────
+    // Black veil rises over 2 s — full at exactly 22 s when reveal starts.
+    // Warm overlay, rays, and sunrise all fade out beneath it.
+    after(20000, function () {
+      warmOvl.style.transition  = 'opacity 1.5s ease';
+      warmOvl.style.opacity     = '0';
+      raysCV.style.transition   = 'opacity 1.5s ease';
+      raysCV.style.opacity      = '0';
+      hideVid(vSunrise, 2000);
+      blackVeil.style.opacity   = '1';   // 2 s CSS transition → full at 22 s
+    });
+    after(22000, stopRays);  // stop RAF loop once black covers it
+
+    // ── PHASE 7 — Reveal on black (22–29 s) ──────────────────────────────────
     after(22000, function () {
       revealEl.style.transition = 'none';
       revealEl.style.opacity    = '1';
 
-      // Line 1: "Coming Soon" — 11 chars × 50 ms = 550 ms typing + 1 s cursor = onDone at ~1550 ms
       typewriter(comingLine1, 'Coming Soon', 50, function () {
-        // Line 2 starts immediately after cursor cleared on line 1
         typewriter(comingLine2, '— September', 50, function () {
-          // Both lines done — fade in logo (scale + color), then tagline, credit
           after(300,  function () { logoEl.classList.add('in'); });
           after(1400, function () { taglineEl.classList.add('in'); });
           after(2100, function () { creditEl.classList.add('in'); });
@@ -813,7 +843,7 @@
       });
     });
 
-    after(28000, function () { replayBtn.classList.add('show'); });
+    after(29000, function () { replayBtn.classList.add('show'); });
   }
 
   // ── Controls ──────────────────────────────────────────────────────────────
